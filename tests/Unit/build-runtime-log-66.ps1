@@ -141,7 +141,7 @@ foreach ($c in $kindCases) {
     $script:UtPlcList = $null
     function script:Get-TcBuildErrors {
         [CmdletBinding()]
-        param([switch]$IncludeWarnings, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet("Auto", "UIA")][string]$Source)
+        param([switch]$IncludeWarnings, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [switch]$ZeroErrorsKnown, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet("Auto", "UIA")][string]$Source)
         # fresh copies per call: Get-TcErrorListSummary adds category / note to the rows
         $e = @($script:UtErrors | ForEach-Object { $_.PSObject.Copy() })
         $w = @($script:UtWarnings | ForEach-Object { $_.PSObject.Copy() })

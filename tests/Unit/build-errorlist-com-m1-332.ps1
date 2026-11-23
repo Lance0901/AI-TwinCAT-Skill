@@ -55,7 +55,7 @@ $global:UiaResult = $null
         & $ScriptBlock
     }
     function script:Initialize-TcErrorListComTypes { [CmdletBinding()] param([int]$IdeProcessId) [PSCustomObject]@{ ok = $true; reason = $null } }
-    function script:Read-TcErrorListCom { [CmdletBinding()] param([int]$MaxMs) $global:ReadCalls++; $global:ComRead }
+    function script:Read-TcErrorListCom { [CmdletBinding()] param([int]$MaxMs, [int]$CapMs, [bool]$FetchWarnings = $true, [bool]$FetchMessages = $true, [bool]$ReadLevel = $true) $global:ReadCalls++; $global:ComRead }
     function script:Initialize-TcUiaScanTypes { [CmdletBinding()] param([int]$TimeoutSec) $true }
     function script:Invoke-TcUiaScan {
         [CmdletBinding()] param([scriptblock]$Script, [object[]]$Arguments, [int]$TimeoutSec, [ref]$TimedOut, [ref]$ErrorOut)
@@ -79,6 +79,10 @@ function Set-Com([hashtable]$o) {
     $d = @{ ok = $true; reason = ''; error = ''; caption = 'Error List'; allCount = 0; flagsRestored = $true; flagsChanged = $true; flagsBefore = @($true, $true, $true); ms = 3
         errors = @(); warnings = @(); messages = @() }
     foreach ($k in $o.Keys) { $d[$k] = $o[$k] }
+    # the counts of the isolated reads (the C# reader reports them; the rows alone were enough before it fetched only what is asked for)
+    if (-not $d.ContainsKey('errorCount')) { $d['errorCount'] = @($d.errors).Count }
+    if (-not $d.ContainsKey('warningCount')) { $d['warningCount'] = @($d.warnings).Count }
+    if (-not $d.ContainsKey('messageCount')) { $d['messageCount'] = @($d.messages).Count }
     $global:ComRead = [PSCustomObject]$d
 }
 function Set-Uia([int]$Errors, [bool]$Found = $true) {

@@ -62,6 +62,8 @@
     .PARAMETER ExpectErrors
         The build / check failed (LastBuildInfo > 0, CheckAllObjects False): passed to Get-TcBuildErrors, a COM list
         without an error row is then not accepted (UIA reads instead).
+    .PARAMETER ZeroErrorsKnown
+        CheckAllObjects returned True (Test-TcPlcProject): passed to Get-TcBuildErrors, 0 error rows are then consistent and need no build summary.
     .PARAMETER BuildPaneText
         Build pane text of the build just run (Build-TcProject), passed to Get-TcBuildErrors for the COM cross-check and codes.
     .PARAMETER RequireBuildSummary
@@ -81,6 +83,7 @@
         [Parameter()][int]$FallbackWarningCount = 0,
         [Parameter()][switch]$SplitRuntimeLog,
         [Parameter()][switch]$ExpectErrors,
+        [Parameter()][switch]$ZeroErrorsKnown,
         [Parameter()][AllowNull()][string]$BuildPaneText = $null,
         [Parameter()][switch]$RequireBuildSummary,
         [Parameter()][ValidateSet('Auto', 'UIA')][string]$Source = 'Auto'
@@ -98,6 +101,7 @@
     $elArgs = @{ IncludeWarnings = $true }
     if ($TimeoutSec -gt 0) { $elArgs['TimeoutSec'] = $TimeoutSec }
     if ($ExpectErrors) { $elArgs['ExpectErrors'] = $true }
+    if ($ZeroErrorsKnown) { $elArgs['ZeroErrorsKnown'] = $true }
     if (-not [string]::IsNullOrWhiteSpace($BuildPaneText)) { $elArgs['BuildPaneText'] = $BuildPaneText }
     if ($RequireBuildSummary) { $elArgs['RequireBuildSummary'] = $true }
     if ($Source -ne 'Auto') { $elArgs['Source'] = $Source }

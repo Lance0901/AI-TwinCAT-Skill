@@ -131,7 +131,7 @@ function Test-TcPlcProject {
         # Error List: the full budget on every path, as Build-TcProject (#107: 8 s on the passed
         # path was too short for the VS2022 Error List scan; an upper bound, not a wait).
         # item 88: COM first; CheckAllObjects returned False -> a COM list without an error row is not accepted (UIA reads)
-        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -ExpectErrors:($passed -eq $false)
+        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -ExpectErrors:($passed -eq $false) -ZeroErrorsKnown:($passed -eq $true)
         if ($null -ne $els.errorListSource) { $data | Add-Member -NotePropertyName errorListSource -NotePropertyValue $els.errorListSource -Force }
         if ($null -ne $els.errorListFallbackReason) { $data | Add-Member -NotePropertyName errorListFallbackReason -NotePropertyValue $els.errorListFallbackReason -Force }
         # stale = left over from earlier operations: no file (category other) AND no compiler code

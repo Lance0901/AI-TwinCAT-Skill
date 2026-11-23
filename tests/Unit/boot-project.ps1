@@ -92,7 +92,7 @@ $global:B.Sm = $sm
         @{ TsProjFile = $global:Tsproj; PlcProjFile = 'x.plcproj' }
     }
     function script:Get-TcBuildErrors {
-        [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages, [switch]$ExpectErrors, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet("Auto", "UIA")][string]$Source)
+        [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages, [switch]$ExpectErrors, [switch]$ZeroErrorsKnown, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet("Auto", "UIA")][string]$Source)
         $errs = @($global:B.Rows | ForEach-Object { & $_ })
         $d = [PSCustomObject]@{ counts = [PSCustomObject]@{ errors = $errs.Count; warnings = 0; messages = 0 }; errors = $errs; warnings = @(); truncated = $false }
         if (@($global:B.Unclassified).Count -gt 0) { $d | Add-Member -NotePropertyName unclassified -NotePropertyValue @($global:B.Unclassified) }

@@ -332,7 +332,7 @@ $requiredOverrides = @('ClearLifecycleBlock.Reason', 'ClearLifecycleBlock.Fallba
 $excludedTools = @('NewProject', 'GetIdeModalDialog', 'StartLifecycle')
 
 # Parameters of a cmdlet that only other cmdlets pass (not part of the tool contract; review #332 N3)
-$internalParameters = @('GetBuildErrors.BuildPaneText', 'GetBuildErrors.RequireBuildSummary')
+$internalParameters = @('GetBuildErrors.BuildPaneText', 'GetBuildErrors.RequireBuildSummary', 'GetBuildErrors.ZeroErrorsKnown')
 
 $commonParameters = @(
     'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction',

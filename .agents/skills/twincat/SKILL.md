@@ -95,7 +95,7 @@ Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the
 | `Find-TcAdsTarget` | `FindAdsTargets` | `[-Search <string>]` |
 | `Get-TcAdsRoutes` | `GetAdsRoutes` | - |
 | `Get-TcAutomationVersion` | `GetAutomationVersion` | `[-Verify]` |
-| `Get-TcBuildErrors` | `GetBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec <int>] [-Source <string>] [-ExpectErrors] [-BuildPaneText <string>] [-RequireBuildSummary]` |
+| `Get-TcBuildErrors` | `GetBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec <int>] [-Source <string>] [-ExpectErrors] [-ZeroErrorsKnown] [-BuildPaneText <string>] [-RequireBuildSummary]` |
 | `Get-TcComModuleParameter` | `GetTcComParameter` | `-Module <string> [-Name <string>] [-ParameterId <string>] [-Online]` |
 | `Get-TcIdeInfo` | `GetIdeInfo` | - |
 | `Get-TcIdeModalDialog` | `GetIdeModalDialog` (composite) | `[-ProcessId <int>] [-TimeoutSec <int>]` |

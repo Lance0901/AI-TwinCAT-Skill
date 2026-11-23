@@ -10,6 +10,9 @@
 #    'Error List' / 'Error List - Current Project (<proj>)' / '... - Current Document' / '... - Open Documents'
 #    (zh-TW: the localized title + the same suffix). Entire Solution = the bare caption. A filtered scope answers 0 or a few
 #    rows WITHOUT an error, so a partial scope must never be read as "no errors" (fail closed: UIA fallback).
+#  - Standalone reads (no pane of THIS build, PR #332 report item 8, 實測 2026-11-24): the search box text made the COM list empty and
+#    GetBuildErrors answered success + 0 errors for a list with 6. Such a read is compared with the LAST build summary of the pane
+#    (Get-TcErrorListComVerdict -Standalone); 0 rows that nothing proves are not accepted (errors-zero-unverified).
 #  - NOT visible to COM: the Error List search box text and the VS2022 column filters (review #332 M1). A list filtered
 #    that way looks like a whole list. Callers whose result decides success (Build-TcProject) therefore accept a COM list
 #    only with the end summary line of THIS build's output pane (-RequireBuildSummary); the callers that have no pane
@@ -31,8 +34,10 @@
 #    After the read (flags back first) the window is put back to hidden / auto-hidden and the readback decides:
 #    data.comRead.errorListCreated = $true says this read made the tab, errorListHidden = $false says it could not be hidden
 #    again (reported as is, 真機未測 2026-11-23). Creation failed -> reason 'errorlist-create-failed', the UIA scan runs.
-#  - Deadline (CODING_STANDARDS 1): the read has a cooperative budget (-MaxMs, checked between COM calls, compile and the
-#    pane work included); one COM call that blocks in the IDE (modal dialog) cannot be interrupted, as with
+#  - Deadline (CODING_STANDARDS 1): the read has a cooperative budget (-MaxMs for the fixed work plus 15 ms per fetched row, at
+#    most -CapMs; PR #332 real-machine report item 2: 32 rows took 4.7-5.5 s, 202 rows 7.0 s, 529 rows ran out of a flat 7.5 s; rows read
+#    before it runs out are kept, marked partial). Checked between COM calls, compile and the
+#    pane work included; one COM call that blocks in the IDE (modal dialog) cannot be interrupted, as with
 #    Invoke-TcComRetry. Moving it to a background runspace was not done: an abandoned read keeps the user's Show* flags
 #    changed (the restore sits in its finally block), which is worse than a late return. Retries are one extra attempt at
 #    most and stop at $script:TcComCallDeadline.
@@ -45,8 +50,6 @@ $script:TcErrorLevelSeverityByDteMajor = @{
 
 # zh-TW pieces as code points (this file stays ASCII)
 $script:TcZhErrorListTitle = -join @([char]0x932f, [char]0x8aa4, [char]0x6e05, [char]0x55ae)   # Error List
-$script:TcZhBuild = -join @([char]0x7d44, [char]0x5efa)                                          # Build
-$script:TcZhFailed = -join @([char]0x5931, [char]0x6557)                                         # Failed
 
 # Scope part of the Error List window caption (Window.Caption). Entire Solution = the bare window title.
 $script:TcErrorListEntireCaptionPattern = '^(Error List|' + $script:TcZhErrorListTitle + ')$'
@@ -54,18 +57,25 @@ $script:TcErrorListScopeCaptionPattern = '^(Error List|' + $script:TcZhErrorList
 
 # End summary lines of the build pane (Get-TcBuildOutputPane text of one build):
 #   PLC compiler   'Build complete -- 0 errors' (實測, add-semantic-linter verification/xae-corrupt-file-behavior.md)
-#   MSBuild        '========== Build: 1 succeeded, 0 failed, 0 up-to-date, 0 skipped ==========' (documented form)
-#   zh-TW VS2022   '========= <Build>: <succeeded> N <unit>, <Failed> 0 <unit>, ... ==========' (實測 2026-11-09, tests/Unit/build-output-pane-219.ps1)
+#   MSBuild / VS   '========== Build: 0 succeeded or up-to-date, 2 failed, 0 skipped ==========' (實測 2026-11-23/24, 4026 XAE + VS2022 + 4024, PR #332 report)
+#                  '========== Build: 1 succeeded, 0 failed, 0 up-to-date, 0 skipped ==========' (older VS form, documented)
+#   zh-TW VS2022   '========= <Build>: <succeeded-or-up-to-date> 2 <unit>, <Failed> 0 <unit>, <skipped> 0 <unit> ==========' (實測 2026-11-09 / 2026-11-24)
+# The MSBuild / VS line is read WITHOUT its words (PR #332 real-machine report item 3: the first pattern wanted 'N succeeded,' and
+# did not match 'N succeeded or up-to-date,'): after the '=====' and a label up to the colon (ASCII or full-width), the line is a
+# comma list (ASCII or full-width comma) of '<words> N <words>' parts and the SECOND number is the failed count - in every form
+# seen (VS 2017-2022 English and zh-TW; the old four-part form also has failed second). Any label counts (Build / Rebuild All /
+# Clean): a Clean line of an unrelated action has 0 failed or is a real failure, never a false 'no error'.
 $script:TcBuildSummaryPlcPattern = '(?im)^\s*Build complete\s*--\s*(?<e>\d+)\s+errors?\b'
-$script:TcBuildSummaryMsbuildPattern = '(?im)^\s*={2,}\s*Build:\s*\d+\s+succeeded,\s*(?<f>\d+)\s+failed\b'
-$script:TcBuildSummaryZhPattern = '(?m)^\s*={2,}\s*' + $script:TcZhBuild + '\s*[:' + [char]0xff1a + ']\s*.*?' + $script:TcZhFailed + '\s*(?<f>\d+)'
+$script:TcBuildSummaryMsbuildPattern = '(?m)^\s*={2,}[^=:\uFF1A\r\n]*[:\uFF1A]\s*[^\d,\uFF0C\r\n]*\d+[^\d,\uFF0C\r\n]*[,\uFF0C]\s*[^\d,\uFF0C\r\n]*(?<f>\d+)'
 
 # Per process: $null (not tried) or @{ ok; reason; at; idePid }. A failure is retried after $script:TcErrorListComRetryAfterSec
 # or when another IDE process is connected (review #332 N5).
 $script:TcErrorListComTypeState = $null
 $script:TcErrorListComRetryAfterSec = 30
 $script:TcErrorListComDefaultMaxMs = 10000
-$script:TcErrorListComSettleMs = 150
+$script:TcErrorListComSettleMs = 100
+# time each FETCHED row adds to the budget (measured about 12 ms per row on 4026 / VS2022, 2026-11-23, PR #332 report item 2)
+$script:TcErrorListComPerRowMs = 15
 
 function ConvertFrom-TcErrorListScopeCaption {
     <#
@@ -222,11 +232,14 @@ function ConvertFrom-TcBuildPaneSummary {
     .DESCRIPTION
         errors          sum of the 'Build complete -- N errors' lines (PLC compiler), $null when there is none
         failedProjects  sum of the failed counts of the MSBuild summary lines (English and zh-TW), $null when there is none
-        found           at least one of them. Another UI language / no summary line -> found = $false (not proven).
+        found           at least one of them. Another UI language of the PLC line / no summary line -> found = $false (not proven).
+        -LastOnly       the pane text is not known to be of ONE build (Get-TcErrorListViaCom without -BuildPaneText reads the
+                        pane as it is): only the LAST 'Build complete' count and the LAST MSBuild failed count are taken,
+                        not the sum of every build in the pane.
         Review #332 M1: the only proof a COM list may stand for "no error" besides the row count itself.
     #>
     [CmdletBinding()]
-    param([AllowNull()][string]$Text)
+    param([AllowNull()][string]$Text, [switch]$LastOnly)
     $errors = $null
     $failed = $null
     $lines = [System.Collections.Generic.List[string]]::new()
@@ -234,10 +247,15 @@ function ConvertFrom-TcBuildPaneSummary {
         foreach ($ln in ($Text -split "`n")) {
             $l = $ln.TrimEnd("`r")
             $m = [regex]::Match($l, $script:TcBuildSummaryPlcPattern)
-            if ($m.Success) { $errors = [int]$errors + [int]$m.Groups['e'].Value; $lines.Add($l.Trim()); continue }
+            if ($m.Success) {
+                if ($LastOnly) { $errors = [int]$m.Groups['e'].Value } else { $errors = [int]$errors + [int]$m.Groups['e'].Value }
+                $lines.Add($l.Trim()); continue
+            }
             $m = [regex]::Match($l, $script:TcBuildSummaryMsbuildPattern)
-            if (-not $m.Success) { $m = [regex]::Match($l, $script:TcBuildSummaryZhPattern) }
-            if ($m.Success) { $failed = [int]$failed + [int]$m.Groups['f'].Value; $lines.Add($l.Trim()) }
+            if ($m.Success) {
+                if ($LastOnly) { $failed = [int]$m.Groups['f'].Value } else { $failed = [int]$failed + [int]$m.Groups['f'].Value }
+                $lines.Add($l.Trim())
+            }
         }
     }
     [PSCustomObject]@{ found = ($null -ne $errors -or $null -ne $failed); errors = $errors; failedProjects = $failed; lines = $lines.ToArray() }
@@ -370,6 +388,20 @@ function Get-TcErrorListComVerdict {
         The result decides success: a COM list is accepted only with a parsed end summary in -PaneSummary.
     .PARAMETER PaneSummary
         ConvertFrom-TcBuildPaneSummary of the pane of THIS build.
+    .PARAMETER Standalone
+        The caller has no proof of its own and no pane of THIS build (GetBuildErrors called by itself). PR #332 real-machine
+        report item 8: with text in the Error List search box the COM list is empty and looked like a clean build
+        (success, 0 errors, although 6 existed). COM cannot see that filter, so a standalone read is accepted only when
+          - -StaleSummary (the end summary of the LAST build pane, ConvertFrom-TcBuildPaneSummary -LastOnly) does not say more
+            errors / failed projects than rows were read (fewer-errors-than-last-build-summary), or
+          - it has error rows (a filter can only hide rows; the rows are the lower bound, data.comRead.verifiedBy = 'none' and a note), or
+          - something else says 0 is true: the caller (-ZeroErrorsKnown, CheckAllObjects returned True) or a summary that says 0.
+        Zero error rows and nothing proving them -> 'errors-zero-unverified', the UIA scan reads (it compares the rows with the
+        button totals, which a search text does not change) and reports ERRORLIST_INCOMPLETE / ERRORLIST_UNAVAILABLE instead of a clean 0.
+    .PARAMETER StaleSummary
+        ConvertFrom-TcBuildPaneSummary -LastOnly of the pane as it is now (it may belong to an earlier build).
+    .PARAMETER ZeroErrorsKnown
+        The caller knows there is no error (CheckAllObjects returned True): 0 error rows are consistent, not unverified.
     #>
     [CmdletBinding()]
     param(
@@ -381,17 +413,23 @@ function Get-TcErrorListComVerdict {
         [AllowNull()][object[]]$PaneLines = $null,
         [AllowNull()][object[]]$ErrorItems = $null,
         [switch]$RequireBuildSummary,
-        [AllowNull()][object]$PaneSummary = $null
+        [AllowNull()][object]$PaneSummary = $null,
+        [switch]$Standalone,
+        [AllowNull()][object]$StaleSummary = $null,
+        [switch]$ZeroErrorsKnown
     )
     $notes = [System.Collections.Generic.List[string]]::new()
     $flagsOk = $true
     if ($null -ne $Com.PSObject.Properties['flagsRestored']) { $flagsOk = [bool]$Com.flagsRestored }
-    $verdict = { param([bool]$Accept, [string]$Reason) [PSCustomObject]@{ accept = $Accept; reason = $Reason; notes = $notes.ToArray(); flagsRestored = $flagsOk } }
+    $restoreText = 'the Error List Errors / Warnings / Messages buttons could not be set back to their earlier state'
+    if ($null -ne $Com.PSObject.Properties['restoreNote'] -and -not [string]::IsNullOrWhiteSpace([string]$Com.restoreNote)) { $restoreText += " ($([string]$Com.restoreNote))" }
+    $by = $null
+    $verdict = { param([bool]$Accept, [string]$Reason) [PSCustomObject]@{ accept = $Accept; reason = $Reason; notes = $notes.ToArray(); flagsRestored = $flagsOk; verifiedBy = $by } }
     if (-not [bool]$Com.ok) {
         if ([string]$Com.reason -eq 'errorlist-create-failed') { return (& $verdict $false 'errorlist-create-failed') }
         $why = [string]$Com.reason
         if (-not [string]::IsNullOrWhiteSpace([string]$Com.error)) { $why += ": $([string]$Com.error)" }
-        if (-not $flagsOk) { $why += '; the Error List Errors / Warnings / Messages buttons could not be set back to their earlier state' }
+        if (-not $flagsOk) { $why += "; $restoreText" }
         return (& $verdict $false "com-read-failed:$why")
     }
     if ($null -ne $Com.PSObject.Properties['created'] -and [bool]$Com.created -and $null -ne $Com.PSObject.Properties['hiddenRestored'] -and -not [bool]$Com.hiddenRestored) {
@@ -409,7 +447,28 @@ function Get-TcErrorListComVerdict {
     if ($ExpectErrors -and $ErrorRows -eq 0) {
         return (& $verdict $false 'expected-errors-none-read: the build / check failed but the COM list has no error row')
     }
+    if ($ExpectErrors) { $by = 'caller-expects-errors' }
+    elseif ($ZeroErrorsKnown -and $ErrorRows -eq 0) { $by = 'caller-confirmed-no-errors' }
+    if ($Standalone -and -not $RequireBuildSummary) {
+        if ($null -ne $StaleSummary -and [bool]$StaleSummary.found) {
+            if ($null -ne $StaleSummary.errors -and [int]$StaleSummary.errors -gt $ErrorRows) {
+                return (& $verdict $false "fewer-errors-than-last-build-summary: the last build summary in the build pane says $([int]$StaleSummary.errors) error(s), the COM list has $ErrorRows error row(s) (an Error List search text or column filter hides rows from COM)")
+            }
+            if ($null -ne $StaleSummary.failedProjects -and [int]$StaleSummary.failedProjects -gt 0 -and $ErrorRows -eq 0) {
+                return (& $verdict $false "fewer-errors-than-last-build-summary: the last build summary says $([int]$StaleSummary.failedProjects) project(s) failed, the COM list has no error row (an Error List search text or column filter hides rows from COM)")
+            }
+            if ($null -eq $by) { $by = 'last-build-summary' }
+        }
+        elseif ($null -eq $by) {
+            if ($ErrorRows -eq 0) {
+                return (& $verdict $false 'errors-zero-unverified: the COM list has no error row and nothing proves that it is the whole list (no build summary in the build pane, the caller knows nothing about the build); an Error List search text or column filter shows 0 rows too')
+            }
+            $by = 'none'
+            $notes.Add('no build summary in the build pane to compare with: an Error List search text or column filter cannot be ruled out, the error rows read are a lower bound')
+        }
+    }
     if ($RequireBuildSummary) {
+        $by = 'build-summary'
         if ($null -eq $PaneSummary -or -not [bool]$PaneSummary.found) {
             return (& $verdict $false 'build-summary-missing: the build pane of this build has no end summary line (Build complete -- N errors / Build: ... failed), so a filtered Error List (search box, column filter) cannot be ruled out')
         }
@@ -430,7 +489,7 @@ function Get-TcErrorListComVerdict {
             return (& $verdict $false "build-pane-error-not-in-list: $unmatched error line(s) of the build pane have no row with the same file and text in the COM list")
         }
     }
-    if (-not $flagsOk) { $notes.Add('the Error List Errors / Warnings / Messages buttons could not be set back to their earlier state') }
+    if (-not $flagsOk) { $notes.Add($restoreText) }
     return (& $verdict $true $null)
 }
 
@@ -518,27 +577,50 @@ function Read-TcErrorListCom {
     <#
     .SYNOPSIS
         Calls the C# reader on the connected DTE (through Invoke-TcComRetry: busy / dead RPC retried once, IDE_* classified).
-        Returns { ok; reason; error; caption; allCount; flagsRestored; flagsChanged; flagsBefore; created; hiddenRestored; ms; errors; warnings; messages }.
+        Returns { ok; reason; error; caption; allCount; errorCount; warningCount; messageCount; partial; errorsComplete;
+        warningsComplete; messagesComplete; flagsRestored; flagsChanged; flagsBefore; flagsAfter; restoreNote; created;
+        hiddenRestored; ms; budgetMs; timing; errors; warnings; messages }.
         Never throws: an exception of Invoke-TcComRetry (IDE_BUSY, IDE_CRASHED, IDE_MODAL_DIALOG, CALL_DEADLINE_EXCEEDED)
         becomes ok = $false with the text in error, and flagsRestored of the last attempt is kept (review #332 S1).
         Mocked in unit tests.
     .DESCRIPTION
         Retry rule (S1): the flags of the FIRST attempt are passed to every later one, so a retry never reads the user's view
         from a state the helper changed. An attempt that changed the flags and could not put them back is not retried.
+        Budget: -MaxMs covers the fixed work (flags, polls); every row that is fetched adds its own time up to -CapMs
+        (PR #332 real-machine report item 2: 529 rows need more than a flat 7.5 s). A read that runs out of time keeps the rows
+        it has (partial = $true, errors / warnings / messages hold them), it never answers with an empty list.
+        -FetchWarnings:$false / -FetchMessages:$false: those rows are only counted (the count still enters the isolation sum).
+        -ReadLevel:$false: ErrorItem.ErrorLevel is not read (hosts without a level table, one COM call less per row).
     #>
     [CmdletBinding()]
-    param([int]$MaxMs)
+    param(
+        [int]$MaxMs,
+        [int]$CapMs = 0,
+        [bool]$FetchWarnings = $true,
+        [bool]$FetchMessages = $true,
+        [bool]$ReadLevel = $true
+    )
     $dte = $script:TcDte
     $settle = [int]$script:TcErrorListComSettleMs
+    $perRowMs = [int]$script:TcErrorListComPerRowMs
+    $cap = [Math]::Max($MaxMs, $CapMs)
+    $opts = [TcAutomation.ErrorListComOptions]::new()
+    $opts.SettleMs = $settle
+    $opts.MaxMs = $MaxMs
+    $opts.CapMs = $cap
+    $opts.PerRowMs = $perRowMs
+    $opts.FetchWarnings = $FetchWarnings
+    $opts.FetchMessages = $FetchMessages
+    $opts.ReadLevel = $ReadLevel
     $ctx = @{ orig = $null; last = $null; created = $false; hiddenOk = $true }
     $prevDeadline = $script:TcComCallDeadline
-    $mine = [DateTime]::UtcNow.AddMilliseconds([Math]::Max(1000, $MaxMs * 2))
+    $mine = [DateTime]::UtcNow.AddMilliseconds([Math]::Max(1000, $cap * 2))
     if ($null -eq $prevDeadline -or $mine -lt [DateTime]$prevDeadline) { $script:TcComCallDeadline = $mine }
     $r = $null
     $thrown = $null
     try {
         $r = Invoke-TcComRetry -MaxRetries 2 -OperationName 'ErrorList.ErrorItems' -ScriptBlock {
-            $res = [TcAutomation.ErrorListComReader]::Read($dte, $settle, $MaxMs, [bool[]]$ctx.orig)
+            $res = [TcAutomation.ErrorListComReader]::Read($dte, $opts, [bool[]]$ctx.orig)
             $ctx.last = $res
             # a retry finds the window the first attempt created (hidden again): the creation is not lost
             if ($res.Created) { $ctx.created = $true }
@@ -565,7 +647,10 @@ function Read-TcErrorListCom {
         if ($null -ne $last) { $restored = [bool]$last.FlagsRestored; $changed = [bool]$last.FlagsChanged }
         return [PSCustomObject]@{
             ok = $false; reason = 'com-error'; error = $msg; caption = ''; allCount = 0
-            flagsRestored = $restored; flagsChanged = $changed; flagsBefore = @(if ($null -ne $ctx.orig) { $ctx.orig }); ms = 0
+            errorCount = -1; warningCount = -1; messageCount = -1
+            partial = $false; errorsComplete = $false; warningsComplete = $false; messagesComplete = $false
+            flagsRestored = $restored; flagsChanged = $changed; flagsBefore = @(if ($null -ne $ctx.orig) { $ctx.orig }); flagsAfter = @(); restoreNote = ''
+            ms = 0; budgetMs = $cap; timing = ''
             created = [bool]$ctx.created; hiddenRestored = [bool]$ctx.hiddenOk
             errors = @(); warnings = @(); messages = @()
         }
@@ -576,12 +661,23 @@ function Read-TcErrorListCom {
         error         = [string]$r.Error
         caption       = [string]$r.Caption
         allCount      = [int]$r.AllCount
+        errorCount    = [int]$r.ErrorCount
+        warningCount  = [int]$r.WarningCount
+        messageCount  = [int]$r.MessageCount
+        partial       = [bool]$r.Partial
+        errorsComplete   = [bool]$r.ErrorsComplete
+        warningsComplete = [bool]$r.WarningsComplete
+        messagesComplete = [bool]$r.MessagesComplete
         flagsRestored = [bool]$r.FlagsRestored
         flagsChanged  = [bool]$r.FlagsChanged
         flagsBefore   = @($r.FlagsBefore)
+        flagsAfter    = @($r.FlagsAfter)
+        restoreNote   = [string]$r.RestoreNote
         created       = [bool]($ctx.created -or $r.Created)
         hiddenRestored = [bool]($ctx.hiddenOk -and $r.HiddenRestored)
         ms            = [Math]::Round([double]$r.Ms, 1)
+        budgetMs      = [int]$r.BudgetMs
+        timing        = [string]$r.Timing
         errors        = & $rowsOf $r.Errors
         warnings      = & $rowsOf $r.Warnings
         messages      = & $rowsOf $r.Messages
@@ -592,26 +688,35 @@ function Get-TcErrorListViaCom {
     <#
     .SYNOPSIS
         The COM read of the Error List as the data of a Get-TcBuildErrors result.
-        Returns { accepted; reason; data; elapsedMs; flagsRestored }: accepted = $true -> data is complete and may be returned
-        as is; $false -> reason says why the UIA scan must read instead (data is $null; flagsRestored $false when the user's
-        Error List buttons could not be put back). errorListCreated = this read created the Error List tab; errorListHidden =
-        $false when that new tab could not be hidden / auto-hidden again (also on rejections).
+        Returns { accepted; reason; data; partial; elapsedMs; flagsRestored; errorListCreated; errorListHidden }: accepted = $true
+        -> data is complete and may be returned as is; $false -> reason says why the UIA scan must read instead (data is $null;
+        flagsRestored $false when the user's Error List buttons could not be put back). partial = the rows a COM read that did
+        not finish had read (errors / warnings / messages / counts / *Complete / reason), $null when none: the caller shows
+        them if the UIA scan cannot do better, marked partial. errorListCreated = this read created the Error List tab;
+        errorListHidden = $false when that new tab could not be hidden / auto-hidden again (also on rejections).
     .PARAMETER ExpectErrors
         The caller knows the build / check failed (see Get-TcErrorListComVerdict).
+    .PARAMETER ZeroErrorsKnown
+        The caller knows there is no error (CheckAllObjects returned True): 0 error rows need no further proof.
     .PARAMETER BuildPaneText
         Build pane text of THIS build (Build-TcProject): cross-checked against the error rows and used for the codes.
-        Without it the pane is read here for the codes only (it may belong to an earlier build: matches on file + text).
+        Without it the pane is read here for the codes and for the standalone check (the pane may belong to an earlier build:
+        matches on file + text, the last summary only, see Get-TcErrorListComVerdict -Standalone).
     .PARAMETER RequireBuildSummary
         The caller decides success from the result (Build-TcProject): accept only with an end summary of -BuildPaneText.
     .PARAMETER MaxMs
-        Budget of the whole COM path (compile of the helper, read, pane, codes); checked between steps.
+        Budget of the fixed work of the COM path (compile of the helper, flags, polls, pane); checked between steps.
+    .PARAMETER CapMs
+        Hard cap of the whole COM path including the time each fetched row adds (default = MaxMs: no extension).
     #>
     [CmdletBinding()]
     param(
         [bool]$IncludeWarnings = $true,
         [bool]$IncludeMessages = $false,
         [int]$MaxMs = 0,
+        [int]$CapMs = 0,
         [switch]$ExpectErrors,
+        [switch]$ZeroErrorsKnown,
         [AllowNull()][string]$BuildPaneText = $null,
         [switch]$RequireBuildSummary
     )
@@ -619,9 +724,11 @@ function Get-TcErrorListViaCom {
     $flagsRestored = $true
     $errorListCreated = $false
     $errorListHidden = $true
-    $reject = { param([string]$Why) [PSCustomObject]@{ accepted = $false; reason = $Why; data = $null; elapsedMs = [int]$sw.ElapsedMilliseconds; flagsRestored = $flagsRestored; errorListCreated = $errorListCreated; errorListHidden = $errorListHidden } }
+    $partial = $null
+    $reject = { param([string]$Why) [PSCustomObject]@{ accepted = $false; reason = $Why; data = $null; partial = $partial; elapsedMs = [int]$sw.ElapsedMilliseconds; flagsRestored = $flagsRestored; errorListCreated = $errorListCreated; errorListHidden = $errorListHidden } }
     if ($null -eq $script:TcDte) { return (& $reject 'com-unavailable: no DTE connection') }
     if ($MaxMs -le 0) { $MaxMs = [int]$script:TcErrorListComDefaultMaxMs }
+    $capEff = [Math]::Max($MaxMs, $CapMs)
     try {
         # a deciding caller needs the summary of THIS build before anything is read (cheap, and no flag is touched without it)
         $paneSummary = $null
@@ -635,7 +742,7 @@ function Get-TcErrorListViaCom {
         if ($null -ne $script:TcIdeProcessId) { try { $idePid = [int]$script:TcIdeProcessId } catch { $idePid = 0 } }
         $ts = Initialize-TcErrorListComTypes -IdeProcessId $idePid
         if (-not $ts.ok) { return (& $reject ([string]$ts.reason)) }
-        if ($sw.ElapsedMilliseconds -gt $MaxMs) { return (& $reject "com-budget-exceeded: $([int]$sw.ElapsedMilliseconds) ms used before the read (budget $MaxMs ms)") }
+        if ($sw.ElapsedMilliseconds -gt $capEff) { return (& $reject "com-budget-exceeded: $([int]$sw.ElapsedMilliseconds) ms used before the read (budget $capEff ms)") }
 
         $dteMajor = $null
         try {
@@ -643,36 +750,56 @@ function Get-TcErrorListViaCom {
             if ($ver -match '^(\d+)\.') { $dteMajor = [int]$Matches[1] }
         }
         catch { if (Test-TcComMustRethrow -ErrorRecord $_) { throw } }
+        # ErrorLevel only where the host has a level table (it is the cross-check there); one COM call less per row elsewhere
+        $readLevel = ($null -ne $dteMajor -and $null -ne $script:TcErrorLevelSeverityByDteMajor[$dteMajor])
 
-        $com = Read-TcErrorListCom -MaxMs ([Math]::Max(500, $MaxMs - [int]$sw.ElapsedMilliseconds))
+        $com = Read-TcErrorListCom -MaxMs ([Math]::Max(500, $MaxMs - [int]$sw.ElapsedMilliseconds)) -CapMs ([Math]::Max(500, $capEff - [int]$sw.ElapsedMilliseconds)) `
+            -FetchWarnings $IncludeWarnings -FetchMessages $IncludeMessages -ReadLevel $readLevel
         if ($null -eq $com) { return (& $reject 'com-read-failed:no result') }
         if ($null -ne $com.PSObject.Properties['flagsRestored']) { $flagsRestored = [bool]$com.flagsRestored }
         if ($null -ne $com.PSObject.Properties['created']) { $errorListCreated = [bool]$com.created }
         if ($null -ne $com.PSObject.Properties['hiddenRestored']) { $errorListHidden = [bool]$com.hiddenRestored }
 
         $items = @{ Error = [System.Collections.Generic.List[object]]::new(); Warning = [System.Collections.Generic.List[object]]::new(); Message = [System.Collections.Generic.List[object]]::new() }
+        foreach ($r in @($com.errors)) { $items.Error.Add((ConvertTo-TcErrorListComItem -Row $r -Severity 'Error')) }
+        foreach ($r in @($com.warnings)) { $items.Warning.Add((ConvertTo-TcErrorListComItem -Row $r -Severity 'Warning')) }
+        foreach ($r in @($com.messages)) { $items.Message.Add((ConvertTo-TcErrorListComItem -Row $r -Severity 'Message')) }
+        if (-not $com.ok -and $items.Error.Count + $items.Warning.Count + $items.Message.Count -gt 0) {
+            # the read did not finish: what it read is kept, marked partial (never an empty list that hides it)
+            $partial = [PSCustomObject]@{
+                reason           = [string]$com.reason
+                errors           = $items.Error.ToArray()
+                warnings         = $items.Warning.ToArray()
+                messages         = $items.Message.ToArray()
+                errorsComplete   = [bool]$com.errorsComplete
+                warningsComplete = [bool]$com.warningsComplete
+                messagesComplete = [bool]$com.messagesComplete
+                expected         = [PSCustomObject]@{ errors = $(if ([int]$com.errorCount -ge 0) { [int]$com.errorCount } else { $null }); warnings = $(if ([int]$com.warningCount -ge 0) { [int]$com.warningCount } else { $null }); messages = $(if ([int]$com.messageCount -ge 0) { [int]$com.messageCount } else { $null }) }
+                readMs           = $com.ms
+                timing           = [string]$com.timing
+            }
+        }
         $isolatedTotal = 0
         $levelMismatch = 0
-        $levelCounts = ''
+        $levelCounts = 'not-read'
         if ($com.ok) {
-            $isolatedTotal = @($com.errors).Count + @($com.warnings).Count + @($com.messages).Count
-            foreach ($r in @($com.errors)) { $items.Error.Add((ConvertTo-TcErrorListComItem -Row $r -Severity 'Error')) }
-            foreach ($r in @($com.warnings)) { $items.Warning.Add((ConvertTo-TcErrorListComItem -Row $r -Severity 'Warning')) }
-            foreach ($r in @($com.messages)) { $items.Message.Add((ConvertTo-TcErrorListComItem -Row $r -Severity 'Message')) }
-            $levelMismatch = Get-TcErrorLevelMismatchCount -DteMajor $dteMajor -ErrorRows $com.errors -WarningRows $com.warnings -MessageRows $com.messages
-            $lc = [System.Collections.Generic.List[string]]::new()
-            foreach ($pair in @(@('Error', $com.errors), @('Warning', $com.warnings), @('Message', $com.messages))) {
-                foreach ($g in @(@($pair[1]) | Group-Object -Property Level | Sort-Object Name)) { $lc.Add("$($pair[0])[level $($g.Name)]=$($g.Count)") }
+            $isolatedTotal = [int]$com.errorCount + [int]$com.warningCount + [int]$com.messageCount
+            if ($readLevel) {
+                $levelMismatch = Get-TcErrorLevelMismatchCount -DteMajor $dteMajor -ErrorRows $com.errors -WarningRows $com.warnings -MessageRows $com.messages
+                $lc = [System.Collections.Generic.List[string]]::new()
+                foreach ($pair in @(@('Error', $com.errors), @('Warning', $com.warnings), @('Message', $com.messages))) {
+                    foreach ($g in @(@($pair[1]) | Group-Object -Property Level | Sort-Object Name)) { $lc.Add("$($pair[0])[level $($g.Name)]=$($g.Count)") }
+                }
+                $levelCounts = $lc -join ' '
             }
-            $levelCounts = $lc -join ' '
         }
 
         $freshPane = $false
         $paneLines = $null
         $paneText = $BuildPaneText
-        if ($com.ok -and $sw.ElapsedMilliseconds -gt $MaxMs) { return (& $reject "com-budget-exceeded: $([int]$sw.ElapsedMilliseconds) ms used after the read (budget $MaxMs ms)") }
+        if ($com.ok -and $sw.ElapsedMilliseconds -gt $capEff) { return (& $reject "com-budget-exceeded: $([int]$sw.ElapsedMilliseconds) ms used after the read (budget $capEff ms)") }
         if ($com.ok -and [string]::IsNullOrWhiteSpace($paneText)) {
-            # codes only: the pane may be older than the list, so no count cross-check from it
+            # codes and the standalone check: the pane may be older than the list, so no count cross-check from its lines
             try {
                 $pr = Invoke-TcComRetry -MaxRetries 2 -OperationName 'Read build output' -ScriptBlock { Get-TcBuildOutputPane }
                 if ($null -ne $pr -and [string]$pr.status -eq 'read') { $paneText = [string]$pr.text }
@@ -681,10 +808,16 @@ function Get-TcErrorListViaCom {
         }
         elseif ($com.ok) { $freshPane = $true }
         if (-not [string]::IsNullOrWhiteSpace($paneText)) { $paneLines = ConvertFrom-TcBuildPaneDiagnostics -Text $paneText }
+        # PR #332 report item 8: a read of GetBuildErrors by itself has no pane of THIS build; the last summary of the pane is
+        # the only thing that can show rows hidden by a search text (Get-TcErrorListComVerdict -Standalone)
+        $standalone = ($com.ok -and -not $freshPane)
+        $staleSummary = $null
+        if ($standalone) { $staleSummary = ConvertFrom-TcBuildPaneSummary -Text $paneText -LastOnly }
 
-        $verdict = Get-TcErrorListComVerdict -Com $com -ErrorRows $items.Error.Count -LevelMismatchRows $levelMismatch -IsolatedTotal $isolatedTotal `
+        $verdict = Get-TcErrorListComVerdict -Com $com -ErrorRows ([int]$com.errorCount) -LevelMismatchRows $levelMismatch -IsolatedTotal $isolatedTotal `
             -ExpectErrors:$ExpectErrors -PaneLines $(if ($freshPane) { $paneLines } else { $null }) -ErrorItems $items.Error.ToArray() `
-            -RequireBuildSummary:$RequireBuildSummary -PaneSummary $paneSummary
+            -RequireBuildSummary:$RequireBuildSummary -PaneSummary $paneSummary `
+            -Standalone:$standalone -StaleSummary $staleSummary -ZeroErrorsKnown:$ZeroErrorsKnown
         if (-not $verdict.accept) { return (& $reject ([string]$verdict.reason)) }
 
         # Compiler codes from the build pane (Error and Warning rows); no match -> $null. One index for all rows (S6).
@@ -696,7 +829,7 @@ function Get-TcErrorListViaCom {
         }
         $unresolvedCodes = @($items.Error | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.code) }).Count
 
-        $counts = [PSCustomObject]@{ errors = $items.Error.Count; warnings = $items.Warning.Count; messages = $items.Message.Count }
+        $counts = [PSCustomObject]@{ errors = [int]$com.errorCount; warnings = [int]$com.warningCount; messages = [int]$com.messageCount }
         $data = [PSCustomObject]@{
             counts    = $counts
             errors    = $items.Error.ToArray()
@@ -706,22 +839,29 @@ function Get-TcErrorListViaCom {
         }
         if ($IncludeWarnings) { $data | Add-Member -NotePropertyName 'warnings' -NotePropertyValue $items.Warning.ToArray() }
         if ($IncludeMessages) { $data | Add-Member -NotePropertyName 'messages' -NotePropertyValue $items.Message.ToArray() }
+        $notes = [System.Collections.Generic.List[string]]::new()
+        foreach ($n in @($verdict.notes)) { $notes.Add([string]$n) }
+        if ($errorListCreated -and $errorListHidden) { $notes.Add('the Error List window did not exist: this read created it and put it back to hidden / auto-hidden (read back); the IDE window list was changed, the visible layout is as before') }
         $data | Add-Member -NotePropertyName 'comRead' -NotePropertyValue ([PSCustomObject]@{
                 severityBy        = 'ShowFlags'
-                levelCheck        = $(if ($null -ne $dteMajor -and $null -ne $script:TcErrorLevelSeverityByDteMajor[$dteMajor]) { 'agreed' } else { 'no-table' })
+                levelCheck        = $(if ($readLevel) { 'agreed' } else { 'no-table' })
                 levelCounts       = $levelCounts
                 dteMajor          = $dteMajor
                 readMs            = $com.ms
+                budgetMs          = [int]$com.budgetMs
+                timing            = [string]$com.timing
                 rows              = ($items.Error.Count + $items.Warning.Count + $items.Message.Count)
                 flagsRestored     = [bool]$com.flagsRestored
                 errorListCreated  = $errorListCreated
                 errorListHidden   = $errorListHidden
+                layoutChanged     = $errorListCreated
+                verifiedBy        = [string]$verdict.verifiedBy
                 errorsWithoutCode = $unresolvedCodes
                 paneCrossCheck    = [bool]$freshPane
-                buildSummary      = $(if ($null -ne $paneSummary) { [string]($paneSummary.lines -join ' | ') } else { $null })
-                notes             = @($verdict.notes)
+                buildSummary      = $(if ($null -ne $paneSummary) { [string]($paneSummary.lines -join ' | ') } elseif ($null -ne $staleSummary) { [string]($staleSummary.lines -join ' | ') } else { $null })
+                notes             = $notes.ToArray()
             })
-        return [PSCustomObject]@{ accepted = $true; reason = $null; data = $data; elapsedMs = [int]$sw.ElapsedMilliseconds; flagsRestored = $flagsRestored; errorListCreated = $errorListCreated; errorListHidden = $errorListHidden }
+        return [PSCustomObject]@{ accepted = $true; reason = $null; data = $data; partial = $null; elapsedMs = [int]$sw.ElapsedMilliseconds; flagsRestored = $flagsRestored; errorListCreated = $errorListCreated; errorListHidden = $errorListHidden }
     }
     catch {
         # IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG from Invoke-TcComRetry: the COM source is not usable now; the UIA

@@ -1287,7 +1287,7 @@ actions:
         type: integer
         minimum: 5
         maximum: 600
-        description: "Limit for the whole call: the COM path gets at most a quarter of it (8 s at most; compile, read, pane and codes are checked against it between COM calls), the UI Automation scan what is left (at least 1 s), including the one-time preparation of its helper types (the first call in a process). The UIA scan is hard; one COM call that blocks inside the IDE (modal dialog) cannot be interrupted, the same limit as Invoke-TcComRetry (it runs under its modal-dialog watchdog). Default 30."
+        description: "Limit for the whole call: the COM path gets a quarter of it (8 s at most) for the fixed work (compile, flags, pane, codes; checked between COM calls) plus time for every row it fetches, in all at most 60 % of it (18 s of the default 30: 529 rows need more than a flat 7.5 s, PR #332 report item 2); the UI Automation scan gets what is left (at least 1 s), including the one-time preparation of its helper types (the first call in a process). The UIA scan is hard; one COM call that blocks inside the IDE (modal dialog) cannot be interrupted, the same limit as Invoke-TcComRetry (it runs under its modal-dialog watchdog). Default 30."
         required: false
         default: 30
       Source:

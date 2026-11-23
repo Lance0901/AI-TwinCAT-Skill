@@ -7,6 +7,15 @@
 // preceded by an "all three off" step that must show Count = 0 (S3: a Count that has not followed the flag change yet
 // would show the previous list; errors and warnings could swap and still add up).
 //
+// Speed (review of the real-machine report of PR #332, item 2): the first version needed 4.7-5.5 s for 32 rows and 7.0 s for
+// 200 rows (VS2022 / XAE 4026, 2026-11-23). What changed: flags are only written when the readback differs (the first
+// version wrote all three on every step, about 27 writes per read), the final all-off step before the all-on count is gone
+// (the isolation sum check covers it), warnings / messages rows are only fetched when the caller wants them (their COUNT
+// still enters the sum check), the per-row ErrorItem reads are Description / FileName / Line / Project (Column is a
+// constant 1 and never used, ErrorLevel only where the host has a level table). The time of every kind of call is
+// measured in ErrorListComResult.Timing, so the next real-machine run shows where the rest goes.
+// Rows read before a timeout stay in the result (Partial = true): never an empty list that hides what was read.
+//
 // Deadline (CODING_STANDARDS 1): maxMs is checked BETWEEN source calls (before every row, every poll). One call that
 // blocks inside the IDE (modal dialog) cannot be interrupted from here, the same limit as Invoke-TcComRetry; the
 // PowerShell caller (Read-TcErrorListCom) runs it inside Invoke-TcComRetry (modal-dialog watchdog, IDE_* classification)
@@ -24,8 +33,19 @@ namespace TcAutomation
         public string Description;
         public string FileName;
         public int Line;
-        public int Column;
+        public int Column;           // not read (constant 1 on every row, measured 2026-11-23); stays 0
         public string Project;
+    }
+
+    public sealed class ErrorListComOptions
+    {
+        public int SettleMs = 100;        // poll interval of the Count checks
+        public int MaxMs = 7500;          // budget of the fixed work (flags, polls)
+        public int CapMs = 0;             // hard cap incl. the per-row extension; 0 = MaxMs (no extension)
+        public int PerRowMs = 15;         // budget added per row that is fetched (measured about 12 ms per row, 2026-11-23)
+        public bool FetchWarnings = true; // false: warnings are only counted (the count still enters the isolation sum)
+        public bool FetchMessages = true; // false: messages are only counted
+        public bool ReadLevel = true;     // false: ErrorItem.ErrorLevel is not read (Level = 0); true for hosts with a level table
     }
 
     public sealed class ErrorListComResult
@@ -41,7 +61,19 @@ namespace TcAutomation
         public bool FlagsRead;       // FlagsBefore holds the user's flags (read here, or passed in by a retry)
         public bool FlagsChanged;    // the first flag change was attempted: the finally block had to restore
         public bool FlagsRestored;   // true when nothing was changed, or the readback equals FlagsBefore
+        public bool FlagsMatchBefore;// FlagsAfter (read independently after the restore, twice) equals FlagsBefore
+        public bool[] FlagsAfter = new bool[3];    // what the buttons read after the restore (valid when FlagsRead && FlagsChanged)
+        public string RestoreNote;   // before / after text when the restore did not read back equal
         public int AllCount;         // ErrorItems.Count with all three flags on
+        public int ErrorCount;       // stable ErrorItems.Count under ShowErrors only (-1 = not reached)
+        public int WarningCount;     // same for ShowWarnings only
+        public int MessageCount;     // same for ShowMessages only
+        public bool Partial;         // !Ok but rows were read: Errors / Warnings / Messages hold the rows read so far
+        public bool ErrorsComplete;  // every error row was fetched
+        public bool WarningsComplete;// every warning row was fetched, or warnings were not asked for (counted only)
+        public bool MessagesComplete;// same for messages
+        public int BudgetMs;         // budget at the end (MaxMs plus the per-row extension)
+        public string Timing;        // 'flagSets=12 flagSetMs=... counts=.. countMs=.. rows=.. rowMs=.. sleepMs=.. (ms)'
         public List<ErrorListComRow> Errors = new List<ErrorListComRow>();     // ShowErrors only
         public List<ErrorListComRow> Warnings = new List<ErrorListComRow>();   // ShowWarnings only
         public List<ErrorListComRow> Messages = new List<ErrorListComRow>();   // ShowMessages only
@@ -63,7 +95,47 @@ namespace TcAutomation
         void SetFlag(int index, bool value);
         // ErrorItems.Count; a fresh read of the list, RowAt(1..count) belong to the last Count()
         int Count();
-        ErrorListComRow RowAt(int index1);
+        // withLevel = false: ErrorLevel is not read (one RPC less per row)
+        ErrorListComRow RowAt(int index1, bool withLevel);
+    }
+
+    // Measures every kind of source call (flag writes, Count, row reads, sleeps) of one Run; the PowerShell result carries it
+    // as comRead.timing so a real-machine run shows where the time goes (the first version had no such numbers).
+    sealed class TimedSource
+    {
+        readonly IErrorListSource s;
+        public int FlagSets, Counts, Rows, Sleeps;
+        public long FlagSetMs, CountMs, RowMs, SleepMs;
+        public TimedSource(IErrorListSource source) { s = source; }
+        public bool GetFlag(int i) { return s.GetFlag(i); }
+        public void SetFlag(int i, bool v)
+        {
+            var sw = Stopwatch.StartNew();
+            try { s.SetFlag(i, v); }
+            finally { FlagSets++; FlagSetMs += sw.ElapsedMilliseconds; }
+        }
+        public int Count()
+        {
+            var sw = Stopwatch.StartNew();
+            try { return s.Count(); }
+            finally { Counts++; CountMs += sw.ElapsedMilliseconds; }
+        }
+        public ErrorListComRow RowAt(int i, bool withLevel)
+        {
+            var sw = Stopwatch.StartNew();
+            try { return s.RowAt(i, withLevel); }
+            finally { Rows++; RowMs += sw.ElapsedMilliseconds; }
+        }
+        public void Sleep(int ms)
+        {
+            Sleeps++; SleepMs += ms;
+            System.Threading.Thread.Sleep(ms);
+        }
+        public string Text()
+        {
+            return "flagSets=" + FlagSets + " flagSetMs=" + FlagSetMs + " counts=" + Counts + " countMs=" + CountMs
+                + " rows=" + Rows + " rowMs=" + RowMs + " sleeps=" + Sleeps + " sleepMs=" + SleepMs;
+        }
     }
 
     public static class ErrorListComCore
@@ -71,9 +143,13 @@ namespace TcAutomation
         sealed class Budget
         {
             readonly Stopwatch sw = Stopwatch.StartNew();
-            readonly int maxMs;
-            public Budget(int maxMs) { this.maxMs = maxMs; }
-            public bool Over { get { return sw.ElapsedMilliseconds > maxMs; } }
+            long limit;
+            readonly long cap;
+            public Budget(int maxMs, int capMs) { limit = maxMs; cap = Math.Max(maxMs, capMs); }
+            public bool Over { get { return sw.ElapsedMilliseconds > limit; } }
+            // rows that are fetched get time of their own, up to the hard cap (the fixed work stays on MaxMs)
+            public void Extend(long ms) { limit = Math.Min(cap, limit + Math.Max(0L, ms)); }
+            public int Limit { get { return (int)Math.Min((long)int.MaxValue, limit); } }
         }
 
         sealed class ReasonException : Exception
@@ -82,31 +158,34 @@ namespace TcAutomation
             public ReasonException(string reason) : base(reason) { Reason = reason; }
         }
 
-        static void SetFlags(IErrorListSource s, bool e, bool w, bool m)
+        // Writes a flag only when the readback differs (a write makes the IDE refilter the list: that is the expensive call),
+        // switching ON first, OFF last; then reads all three back and throws flags-not-set when they differ.
+        static void SetFlags(TimedSource s, bool e, bool w, bool m)
         {
-            // order: switch ON first, OFF last
-            if (e) s.SetFlag(0, true);
-            if (w) s.SetFlag(1, true);
-            if (m) s.SetFlag(2, true);
-            if (!e) s.SetFlag(0, false);
-            if (!w) s.SetFlag(1, false);
-            if (!m) s.SetFlag(2, false);
+            bool[] want = new bool[] { e, w, m };
+            for (int i = 0; i < 3; i++) if (want[i] && !s.GetFlag(i)) s.SetFlag(i, true);
+            for (int i = 0; i < 3; i++) if (!want[i] && s.GetFlag(i)) s.SetFlag(i, false);
             if (s.GetFlag(0) != e || s.GetFlag(1) != w || s.GetFlag(2) != m) throw new ReasonException("flags-not-set");
         }
 
+        static bool Same(bool[] a, bool[] b)
+        {
+            return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+        }
+
         // All three flags off, then wait until the list shows Count = 0: proof that the flag change reached the list.
-        static void ZeroBaseline(IErrorListSource s, int settleMs, Budget b)
+        static void ZeroBaseline(TimedSource s, int settleMs, Budget b)
         {
             SetFlags(s, false, false, false);
             while (s.Count() != 0)
             {
                 if (b.Over) throw new ReasonException("flags-not-effective");
-                System.Threading.Thread.Sleep(settleMs);
+                s.Sleep(settleMs);
             }
         }
 
         // Count settles a moment after the flags changed: poll until two reads, settleMs apart, agree.
-        static int StableCount(IErrorListSource s, int settleMs, Budget b)
+        static int StableCount(TimedSource s, int settleMs, Budget b)
         {
             int prev = -1;
             while (true)
@@ -115,57 +194,72 @@ namespace TcAutomation
                 if (c == prev) return c;
                 prev = c;
                 if (b.Over) throw new ReasonException("timeout");
-                System.Threading.Thread.Sleep(settleMs);
+                s.Sleep(settleMs);
             }
         }
 
-        static List<ErrorListComRow> ReadRows(IErrorListSource s, int expected, Budget b)
+        // Rows go into 'into' as they are read: a timeout leaves what was read in the list (Partial), it is not thrown away.
+        static void ReadRows(TimedSource s, int expected, List<ErrorListComRow> into, ErrorListComOptions o, Budget b)
         {
             int count = s.Count();
             if (count != expected) throw new ReasonException("count-changed");
-            var rows = new List<ErrorListComRow>(count);
+            b.Extend((long)count * o.PerRowMs);
             for (int i = 1; i <= count; i++)   // 1-based, inclusive
             {
                 if (b.Over) throw new ReasonException("timeout");
-                rows.Add(s.RowAt(i));
+                into.Add(s.RowAt(i, o.ReadLevel));
             }
             // the list must not have changed while it was being read
             if (s.Count() != count) throw new ReasonException("count-changed");
-            return rows;
         }
 
-        static List<ErrorListComRow> ReadWithFlags(IErrorListSource s, bool e, bool w, bool m, int settleMs, Budget b)
+        // Returns the stable count under the given flags; fetches the rows only when 'fetch' (otherwise they are only counted:
+        // the count still enters the isolation sum check).
+        static int ReadWithFlags(TimedSource s, bool e, bool w, bool m, bool fetch, List<ErrorListComRow> into, ErrorListComOptions o, Budget b)
         {
-            ZeroBaseline(s, settleMs, b);
+            ZeroBaseline(s, o.SettleMs, b);
             SetFlags(s, e, w, m);
             for (int attempt = 0; attempt < 3; attempt++)
             {
-                int c = StableCount(s, settleMs, b);
-                try { return ReadRows(s, c, b); }
+                int c = StableCount(s, o.SettleMs, b);
+                if (!fetch) return c;
+                into.Clear();
+                try { ReadRows(s, c, into, o, b); return c; }
                 catch (ReasonException ex) { if (ex.Reason != "count-changed") throw; }
             }
             throw new ReasonException("count-unstable");
         }
 
+        public static ErrorListComResult Run(IErrorListSource source, int settleMs, int maxMs, bool[] originalFlags)
+        {
+            var o = new ErrorListComOptions();
+            o.SettleMs = settleMs;
+            o.MaxMs = maxMs;
+            return Run(source, o, originalFlags);
+        }
+
         // originalFlags: null on the first call. A retry (the caller got RPC_E_CALL_REJECTED) passes the flags of the
         //   FIRST call, so the user's view is never read from a state this helper changed (review #332 S1).
-        public static ErrorListComResult Run(IErrorListSource s, int settleMs, int maxMs, bool[] originalFlags)
+        public static ErrorListComResult Run(IErrorListSource source, ErrorListComOptions o, bool[] originalFlags)
         {
             var res = new ErrorListComResult();
             res.FlagsRestored = true;   // nothing is changed until the first flag change
+            res.FlagsMatchBefore = true;
             res.HiddenRestored = true;  // nothing is created until Create
+            res.ErrorCount = -1; res.WarningCount = -1; res.MessageCount = -1;
             bool createAttempted = false;
+            var s = new TimedSource(source);
             var sw = Stopwatch.StartNew();
-            var budget = new Budget(maxMs);
+            var budget = new Budget(o.MaxMs, o.CapMs);
             try
             {
                 string caption;
-                if (!s.Open(out caption))
+                if (!source.Open(out caption))
                 {
                     // S7 (Lance: hidden tab allowed): create it, never Activate / SetFocus; hidden again in finally
                     createAttempted = true;
                     res.HiddenRestored = false;   // until the readback says otherwise
-                    if (!s.Create(out caption)) { res.Reason = "errorlist-create-failed"; return res; }
+                    if (!source.Create(out caption)) { res.Reason = "errorlist-create-failed"; return res; }
                     res.Created = true;
                 }
                 res.Caption = caption;
@@ -185,12 +279,15 @@ namespace TcAutomation
                 res.FlagsRestored = true;   // until the first change
 
                 res.FlagsChanged = true;
-                res.Errors = ReadWithFlags(s, true, false, false, settleMs, budget);
-                res.Warnings = ReadWithFlags(s, false, true, false, settleMs, budget);
-                res.Messages = ReadWithFlags(s, false, false, true, settleMs, budget);
-                ZeroBaseline(s, settleMs, budget);
+                res.ErrorCount = ReadWithFlags(s, true, false, false, true, res.Errors, o, budget);
+                res.ErrorsComplete = true;
+                res.WarningCount = ReadWithFlags(s, false, true, false, o.FetchWarnings, res.Warnings, o, budget);
+                res.WarningsComplete = true;
+                res.MessageCount = ReadWithFlags(s, false, false, true, o.FetchMessages, res.Messages, o, budget);
+                res.MessagesComplete = true;
+                // no all-off step here: the sum of the three isolated counts must equal this count (checked by the caller)
                 SetFlags(s, true, true, true);
-                res.AllCount = StableCount(s, settleMs, budget);
+                res.AllCount = StableCount(s, o.SettleMs, budget);
                 res.Ok = true;
             }
             catch (ReasonException ex) { res.Ok = false; res.Reason = ex.Reason; }
@@ -202,17 +299,42 @@ namespace TcAutomation
                 if (res.FlagsRead && res.FlagsChanged)
                 {
                     // put the user's flags back: a few tries, the IDE can be busy right after the read
-                    bool ok = false;
-                    for (int attempt = 0; attempt < 3 && !ok; attempt++)
+                    bool applied = false;
+                    for (int attempt = 0; attempt < 3 && !applied; attempt++)
                     {
                         try
                         {
                             SetFlags(s, res.FlagsBefore[0], res.FlagsBefore[1], res.FlagsBefore[2]);
-                            ok = true;
+                            applied = true;
                         }
-                        catch (Exception) { System.Threading.Thread.Sleep(200); }
+                        catch (Exception) { s.Sleep(200); }
                     }
-                    res.FlagsRestored = ok;
+                    // PR #332 real-machine report item 5: a restore is proven by its own readback, not by the writes not throwing.
+                    // Read the three buttons again, wait one settle interval and read them again: both reads must equal what the
+                    // user had (a button that jumps back after the write is caught by the second read).
+                    bool match = false;
+                    try
+                    {
+                        bool[] a = new bool[] { s.GetFlag(0), s.GetFlag(1), s.GetFlag(2) };
+                        match = Same(a, res.FlagsBefore);
+                        if (match)
+                        {
+                            s.Sleep(o.SettleMs);
+                            a = new bool[] { s.GetFlag(0), s.GetFlag(1), s.GetFlag(2) };
+                            match = Same(a, res.FlagsBefore);
+                        }
+                        res.FlagsAfter = a;
+                    }
+                    catch (Exception) { match = false; }
+                    res.FlagsMatchBefore = match;
+                    res.FlagsRestored = applied && match;
+                    if (!res.FlagsRestored)
+                    {
+                        res.RestoreNote = "Errors / Warnings / Messages buttons before the read = "
+                            + res.FlagsBefore[0] + "/" + res.FlagsBefore[1] + "/" + res.FlagsBefore[2]
+                            + ", after the restore = " + res.FlagsAfter[0] + "/" + res.FlagsAfter[1] + "/" + res.FlagsAfter[2]
+                            + (applied ? "" : " (the write did not complete)");
+                    }
                 }
                 if (createAttempted)
                 {
@@ -220,12 +342,15 @@ namespace TcAutomation
                     bool hidden = false;
                     for (int attempt = 0; attempt < 3 && !hidden; attempt++)
                     {
-                        try { hidden = s.RestoreHidden(); }
+                        try { hidden = source.RestoreHidden(); }
                         catch (Exception) { }
-                        if (!hidden) System.Threading.Thread.Sleep(200);
+                        if (!hidden) s.Sleep(200);
                     }
                     res.HiddenRestored = hidden;
                 }
+                res.Partial = !res.Ok && (res.Errors.Count + res.Warnings.Count + res.Messages.Count) > 0;
+                res.BudgetMs = budget.Limit;
+                res.Timing = s.Text();
                 res.Ms = sw.Elapsed.TotalMilliseconds;
             }
             return res;

@@ -161,7 +161,7 @@ Set-Content -LiteralPath $sln -Value '' -Encoding ASCII
     function script:Get-TcPlcProjectList { @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851; disabled = $false; projectFile = $null }) }
     function script:Get-TcBuildErrors {
         [CmdletBinding()]
-        param([switch]$IncludeWarnings, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet("Auto", "UIA")][string]$Source)
+        param([switch]$IncludeWarnings, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [switch]$ZeroErrorsKnown, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet("Auto", "UIA")][string]$Source)
         New-TcResult -Success $true -Data ([PSCustomObject]@{ counts = [PSCustomObject]@{ errors = 0; warnings = 0; messages = 0 }; errors = @(); warnings = @() })
     }
     function script:Invoke-TcComRetry { param([int]$MaxRetries, [string]$OperationName, [int]$TimeoutSec, [scriptblock]$ScriptBlock) & $ScriptBlock }

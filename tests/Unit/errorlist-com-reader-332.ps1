@@ -6,6 +6,9 @@
 #   L  Read-TcErrorListCom: busy once, buttons restored -> retried with the FIRST attempt's flags; busy and buttons NOT restored -> no retry,
 #      flagsRestored $false is returned (S1)
 #   M  Initialize-TcErrorListComTypes: a failure is not cached for the whole process (N5)
+#   N  PR #332 real-machine report items 2 / 5: flags are written only when they differ (fewer writes), rows read before a timeout are kept
+#      (partial), the budget grows with the rows that are fetched, warnings / messages can be counted without fetching, ErrorLevel only on
+#      request, the restore is proven by its own readback, the timing of every kind of call is reported
 #   powershell.exe -NoProfile -File tests/Unit/errorlist-com-reader-332.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -45,6 +48,10 @@ namespace TcAutomation
         public bool FailSetsAfterBusy;  // after that busy error every SetFlag throws RPC_E_CALL_REJECTED (the restore fails)
         public int Runs;
         public int SetCalls;
+        public int RowDelayMs;          // every RowAt() takes this long (a slow IDE)
+        public int RowCalls;
+        public int LevelReads;
+        public int IgnoreWritesAfter;   // after this many SetFlag calls the IDE silently ignores writes (a button that does not move)
         public int CountCallsRun1;
         public bool BusyThrown;
         public List<string> Orig = new List<string>();
@@ -80,6 +87,7 @@ namespace TcAutomation
         {
             st.SetCalls++;
             if (st.FailSetsAfterBusy && st.BusyThrown) throw Busy();
+            if (st.IgnoreWritesAfter > 0 && st.SetCalls > st.IgnoreWritesAfter) return;
             if (st.Flags[i] != v) { st.Flags[i] = v; lagLeft = st.Lag; }
         }
         public int Count()
@@ -93,7 +101,13 @@ namespace TcAutomation
             shown = Current();
             return shown.Count;
         }
-        public ErrorListComRow RowAt(int i) { return shown[i - 1]; }
+        public ErrorListComRow RowAt(int i, bool withLevel)
+        {
+            st.RowCalls++;
+            if (withLevel) st.LevelReads++;
+            if (st.RowDelayMs > 0) System.Threading.Thread.Sleep(st.RowDelayMs);
+            return shown[i - 1];
+        }
         public void Dispose() { }
     }
 
@@ -108,6 +122,14 @@ namespace TcAutomation
             if (originalFlags != null) o = originalFlags[0] + "," + originalFlags[1] + "," + originalFlags[2];
             State.Orig.Add(o);
             using (var s = new FakeSource(State, State.Runs)) return ErrorListComCore.Run(s, settleMs, maxMs, originalFlags);
+        }
+        public static ErrorListComResult Read(object dte, ErrorListComOptions o, bool[] originalFlags)
+        {
+            State.Runs++;
+            string x = "null";
+            if (originalFlags != null) x = originalFlags[0] + "," + originalFlags[1] + "," + originalFlags[2];
+            State.Orig.Add(x);
+            using (var s = new FakeSource(State, State.Runs)) return ErrorListComCore.Run(s, o, originalFlags);
         }
         public static ErrorListComRow Row(string d) { var r = new ErrorListComRow(); r.Description = d; r.Level = 2; r.Line = 1; r.Column = 1; return r; }
     }
@@ -174,6 +196,53 @@ try {
     $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, [bool[]]@($false, $true, $false))
     Check 'K5 originalFlags passed in (a retry): FlagsBefore are those, and they are what is restored' ($r.Ok -and -not $r.FlagsBefore[0] -and $r.FlagsBefore[1] -and -not $st.Flags[0] -and $st.Flags[1] -and -not $st.Flags[2]) (J $st.Flags)
 
+    # --- N: speed, partial, restore proof (PR #332 real-machine report items 2 / 5) ---
+    Reset-Fake
+    $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, $null)
+    Check 'N1 flags are written only when they differ: a normal read of (T,F,T) needs 10 writes (the first version wrote about 27)' ($r.Ok -and $st.SetCalls -eq 10) "sets=$($st.SetCalls)"
+    Check 'N1 the restore is read back: FlagsAfter equals FlagsBefore, FlagsMatchBefore, no note' ($r.FlagsRestored -and $r.FlagsMatchBefore -and $r.FlagsAfter[0] -and -not $r.FlagsAfter[1] -and $r.FlagsAfter[2] -and [string]::IsNullOrEmpty($r.RestoreNote)) (J @{ after = $r.FlagsAfter; note = $r.RestoreNote })
+    Check 'N1 counts: errors 2 / warnings 1 / messages 1, all complete, not partial' ($r.ErrorCount -eq 2 -and $r.WarningCount -eq 1 -and $r.MessageCount -eq 1 -and $r.ErrorsComplete -and $r.WarningsComplete -and $r.MessagesComplete -and -not $r.Partial) (J @{ e = $r.ErrorCount; w = $r.WarningCount; m = $r.MessageCount })
+    Check 'N2 the timing text names every kind of call (flagSets / counts / rows / sleeps)' ($r.Timing -match 'flagSets=10 ' -and $r.Timing -match 'counts=\d+' -and $r.Timing -match 'rows=4 ' -and $r.Timing -match 'sleeps=\d+') $r.Timing
+
+    Reset-Fake
+    $st.IgnoreWritesAfter = 9
+    $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, $null)
+    Check 'N3 the IDE ignores the restore writes (no error thrown): FlagsRestored = $false from the readback, FlagsAfter shows what the buttons say, a note names before / after' ($r.Ok -and -not $r.FlagsRestored -and -not $r.FlagsMatchBefore -and $r.FlagsAfter[1] -and $r.RestoreNote -match 'before the read = True/False/True' -and $r.RestoreNote -match 'after the restore = True/True/True') (J @{ restored = $r.FlagsRestored; after = $r.FlagsAfter; note = $r.RestoreNote })
+
+    Reset-Fake
+    $o = New-Object TcAutomation.ErrorListComOptions
+    $o.SettleMs = 1; $o.MaxMs = 5000; $o.FetchWarnings = $false; $o.FetchMessages = $false; $o.ReadLevel = $false
+    $r = [TcAutomation.ErrorListComReader]::Read($null, $o, $null)
+    Check 'N4 warnings / messages only counted: no rows fetched for them, the counts are there and the sum still equals the all-flags count' ($r.Ok -and $r.Warnings.Count -eq 0 -and $r.Messages.Count -eq 0 -and $r.WarningCount -eq 1 -and $r.MessageCount -eq 1 -and $r.AllCount -eq 4 -and $st.RowCalls -eq 2) (J @{ rowCalls = $st.RowCalls; all = $r.AllCount })
+    Check 'N4 ReadLevel = false: ErrorLevel is never read' ($st.LevelReads -eq 0) "levelReads=$($st.LevelReads)"
+    Reset-Fake
+    $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, $null)
+    Check 'N4 ReadLevel (default true): one level read per fetched row' ($st.LevelReads -eq 4 -and $st.RowCalls -eq 4) "levelReads=$($st.LevelReads)"
+
+    # slow rows: 60 errors at 4 ms each = 240 ms of row time against a fixed budget of 80 ms
+    function Reset-Slow {
+        Reset-Fake
+        $st.Errs.Clear()
+        for ($i = 1; $i -le 60; $i++) { $st.Errs.Add([TcAutomation.ErrorListComReader]::Row("slow$i")) }
+        $st.RowDelayMs = 4
+    }
+    Reset-Slow
+    $o = New-Object TcAutomation.ErrorListComOptions
+    $o.SettleMs = 1; $o.MaxMs = 80
+    $r = [TcAutomation.ErrorListComReader]::Read($null, $o, $null)
+    Check 'N5 the budget runs out in the middle of the rows: not ok, reason timeout, the rows read so far are KEPT (partial), errors not complete, buttons back' (-not $r.Ok -and $r.Reason -eq 'timeout' -and $r.Partial -and $r.Errors.Count -gt 0 -and $r.Errors.Count -lt 60 -and -not $r.ErrorsComplete -and $r.FlagsRestored) (J @{ ok = $r.Ok; reason = $r.Reason; partial = $r.Partial; rows = $r.Errors.Count })
+    Check 'N5 the count that was reached is reported (60 errors expected), the others were not reached (-1)' ($r.ErrorCount -eq -1 -or $r.ErrorCount -eq 60) "errorCount=$($r.ErrorCount)"
+    Reset-Slow
+    $o = New-Object TcAutomation.ErrorListComOptions
+    $o.SettleMs = 1; $o.MaxMs = 80; $o.CapMs = 3000; $o.PerRowMs = 15
+    $r = [TcAutomation.ErrorListComReader]::Read($null, $o, $null)
+    Check 'N6 the same list with a cap: every fetched row adds its time (15 ms each) to the budget, all 60 rows are read' ($r.Ok -and $r.Errors.Count -eq 60 -and $r.ErrorsComplete -and -not $r.Partial -and $r.BudgetMs -gt 80) (J @{ ok = $r.Ok; reason = $r.Reason; rows = $r.Errors.Count; budget = $r.BudgetMs })
+    Reset-Slow
+    $o = New-Object TcAutomation.ErrorListComOptions
+    $o.SettleMs = 1; $o.MaxMs = 80; $o.CapMs = 120; $o.PerRowMs = 15
+    $r = [TcAutomation.ErrorListComReader]::Read($null, $o, $null)
+    Check 'N6 the cap is hard: 120 ms is not enough for 240 ms of rows -> timeout, partial, budget never above the cap' (-not $r.Ok -and $r.Reason -eq 'timeout' -and $r.Partial -and $r.BudgetMs -le 120) (J @{ reason = $r.Reason; budget = $r.BudgetMs; rows = $r.Errors.Count })
+
     # --- L: Read-TcErrorListCom with the real Invoke-TcComRetry ---
     & $mod { $script:TcDte = [PSCustomObject]@{ Version = '17.0' }; $script:TcIdeProcessId = $null; $script:TcComRetryDelayMs = 0; $script:TcErrorListComSettleMs = 1; $script:TcComCallDeadline = $null }
     Reset-Fake
@@ -189,6 +258,16 @@ try {
     Check 'L2 busy and the buttons could NOT be restored: no retry (one run), ok = $false, flagsRestored = $false is returned, not lost' (-not $c.ok -and $st.Runs -eq 1 -and -not $c.flagsRestored -and $c.flagsChanged -and $c.reason -eq 'com-error') (J @{ runs = $st.Runs; ok = $c.ok; restored = $c.flagsRestored; reason = $c.reason })
     $v = & $mod { param($x) Get-TcErrorListComVerdict -Com $x } $c
     Check 'L2 the verdict names it and carries flagsRestored $false up to the caller' (-not $v.accept -and $v.flagsRestored -eq $false -and $v.reason -match 'could not be set back') (J $v)
+
+    Reset-Slow
+    $c = & $mod { Read-TcErrorListCom -MaxMs 80 }
+    Check 'L6 Read-TcErrorListCom: a read that runs out of time returns the rows read (partial = $true, 1..59 rows), reason timeout, buttons restored' (-not $c.ok -and $c.partial -and $c.reason -eq 'timeout' -and $c.errors.Count -gt 0 -and $c.errors.Count -lt 60 -and $c.flagsRestored -and -not $c.errorsComplete) (J @{ ok = $c.ok; partial = $c.partial; rows = $c.errors.Count; reason = $c.reason })
+    Reset-Slow
+    $c = & $mod { Read-TcErrorListCom -MaxMs 80 -CapMs 3000 }
+    Check 'L6 the same read with -CapMs: all 60 rows, ok, budgetMs above the fixed 80, timing reported' ($c.ok -and $c.errors.Count -eq 60 -and $c.budgetMs -gt 80 -and $c.timing -match 'flagSets=') (J @{ ok = $c.ok; rows = $c.errors.Count; budget = $c.budgetMs })
+    Reset-Fake
+    $c = & $mod { Read-TcErrorListCom -MaxMs 5000 -FetchWarnings $false -FetchMessages $false -ReadLevel $false }
+    Check 'L7 -FetchWarnings / -FetchMessages $false: counted (1 / 1), not fetched (0 rows), errors fetched (2)' ($c.ok -and $c.warningCount -eq 1 -and $c.messageCount -eq 1 -and $c.warnings.Count -eq 0 -and $c.messages.Count -eq 0 -and $c.errors.Count -eq 2) (J @{ w = $c.warningCount; m = $c.messageCount })
 
     Reset-Fake
     $st.Exists = $false

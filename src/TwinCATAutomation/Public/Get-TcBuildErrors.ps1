@@ -25,14 +25,22 @@
             COM cannot see the Error List search box or column filters; the summary is what rules a filtered list out
           - the Error List window does not exist and could not be created ('errorlist-create-failed'): UIA reads
             (a missing window is created hidden through ToolWindows.ErrorList, never activated: data.comRead.errorListCreated)
+          - nothing proves the list is not filtered (PR #332 report item 8: text in the Error List search box shows 0 rows to COM,
+            it looked like a clean build): a standalone read (no -BuildPaneText) is compared with the LAST build summary of the
+            build pane; more errors / failed projects there than rows read -> 'fewer-errors-than-last-build-summary', and 0 error
+            rows with no summary and no -ZeroErrorsKnown -> 'errors-zero-unverified'. Both go to UIA, which compares the rows with
+            the button totals (ERRORLIST_INCOMPLETE) or says ERRORLIST_UNAVAILABLE; never success with 0 errors that nothing proves
         The compiler code (Cxxxx / SAxxxx) is not in the COM description: it is taken from the build
         pane line with the same file and text, else $null. file / project / line have the UIA form
         (file = base name + ' (Impl)' / ' (Decl)' as the grid shows it, project = project name, line =
         the Error List line, column = $null; data.errors[].filePath = the full path).
         Source 2, UI Automation (data.source 'ErrorList(UIA)'; data.fallbackReason says why COM was not
         used). The TwinCAT PLC compiler does not report through DTE when read with late binding, so the
-        Error List tool window of the XAE is scanned: the window is made visible with View.ErrorList,
-        then a UI Automation scan (separate STA runspace, hard -TimeoutSec) reads
+        Error List tool window of the XAE is scanned. The scan never shows, activates or restores a window
+        (PR #332 real-machine report item 4: View.ErrorList restored a minimized VS2022 and took the
+        foreground; it is no longer run): the Error List must already be on screen in the IDE, otherwise the
+        result is ERRORLIST_UNAVAILABLE ('open View > Error List once'). A UI Automation scan (separate STA
+        runspace, hard -TimeoutSec) reads
           - the summary buttons ("9 Errors", "8 Warnings", "0 of 10 Messages") -> counts
           - every row of the (virtualised) grid, scrolling page by page, de-duplicated
             on description+project+file+line.
@@ -41,7 +49,7 @@
         The TwinCAT error code (Cxxxx / SAxxxx) is parsed from the description when it
         is part of it; the IDE's own "Code" column is used when that column is shown.
         Requires the IDE process id stored by Connect-TcIde and a visible Error List
-        (not auto-hidden); otherwise ERRORLIST_UNAVAILABLE is returned.
+        (not auto-hidden, not closed); otherwise ERRORLIST_UNAVAILABLE is returned.
         English and zh-TW VS2022 UIs are recognised (pane name / count button labels
         such as "0 / 2" + the localized word; the total is reported). The scope filter is
         read from the scope ComboBox's own selection (also while it is collapsed, #117); when it
@@ -55,8 +63,10 @@
     .PARAMETER IncludeMessages
         Also read message rows (data.messages).
     .PARAMETER TimeoutSec
-        Limit for the whole call: the COM path gets at most a quarter of it (8 s at most; compile, read, pane and
-        codes are checked against it between COM calls), the UI Automation scan what is left (at least 1 s),
+        Limit for the whole call: the COM path gets a quarter of it (8 s at most) for the fixed work (compile, flags, pane,
+        codes; checked between COM calls) plus time for every row it fetches, in all at most 60 % of it (18 s of the
+        default 30: 529 rows need more than a flat 7.5 s, PR #332 report item 2); the UI Automation scan gets what is
+        left (at least 1 s),
         including the one-time preparation of its helper types (the first call in a process). The UIA scan is hard;
         one COM call that blocks inside the IDE (modal dialog) cannot be interrupted, the same limit as
         Invoke-TcComRetry (it runs under its modal-dialog watchdog). Default 30.
@@ -66,6 +76,9 @@
     .PARAMETER ExpectErrors
         The caller knows the build / check failed (LastBuildInfo > 0, CheckAllObjects False): a COM list
         without any error row is then not accepted (falls back to UIA).
+    .PARAMETER ZeroErrorsKnown
+        Internal (Test-TcPlcProject passes it when CheckAllObjects returned True; not an MCP parameter): the caller knows there
+        is no error, so a COM list with no error row is consistent and needs no build summary.
     .PARAMETER BuildPaneText
         Internal (Build-TcProject passes it; not an MCP parameter): the build pane text of the build that was
         just run. The COM read is cross-checked against its error lines and takes the compiler codes from it.
@@ -90,10 +103,19 @@
                          Warnings / Messages buttons and could not put them back
         data.comErrorListCreated  $true (only then present) on a UIA result: the COM attempt created the Error List tab
         data.comErrorListHidden   $false (only then present) on a UIA result: that new tab could not be hidden again
-        data.comRead     COM results only: severityBy ('ShowFlags'), levelCheck, levelCounts, dteMajor, readMs, rows,
-                         flagsRestored, errorListCreated (this read created the hidden Error List tab), errorListHidden ($false =
-                         the new tab could not be hidden / auto-hidden again, reported as is), errorsWithoutCode (error rows whose code the build pane could not give),
-                         paneCrossCheck, buildSummary, notes
+        data.comRead     COM results only: severityBy ('ShowFlags'), levelCheck, levelCounts ('not-read' on hosts without a level
+                         table), dteMajor, readMs, budgetMs, timing (flagSets / counts / rows / sleeps with their ms: where the
+                         read time went), rows, flagsRestored (the three buttons read back equal, twice), errorListCreated (this
+                         read created the hidden Error List tab), errorListHidden ($false = the new tab could not be hidden /
+                         auto-hidden again, reported as is), layoutChanged (= errorListCreated: this read changed the IDE's
+                         window list), verifiedBy ('build-summary' | 'last-build-summary' | 'caller-expects-errors' |
+                         'caller-confirmed-no-errors' | 'none' = error rows read but nothing to compare with, see notes),
+                         errorsWithoutCode (error rows whose code the build pane could not give), paneCrossCheck, buildSummary, notes
+        data.partial     $true on a FAILED result (never on success) when the COM read stopped before the end and its rows are
+                         shown here: data.errors / warnings / messages hold the rows read so far, data.truncated = $true,
+                         data.source = 'ErrorList(COM)', data.partialRead = @{ reason; errorsComplete; warningsComplete;
+                         messagesComplete; expected; readMs; timing }. The rows are NOT the whole list: never read them as 0 errors
+                         or as complete (the result is success = $false)
         data.severityUnknown  $true when the rows could not be assigned a severity (the
                          filter buttons were not toggleable and more than one is on);
                          those rows are then in data.unclassified, NOT in data.errors
@@ -133,6 +155,9 @@
         [switch]$ExpectErrors,
 
         [Parameter()]
+        [switch]$ZeroErrorsKnown,
+
+        [Parameter()]
         [string]$BuildPaneText,
 
         [Parameter()]
@@ -162,6 +187,33 @@
     $comFlagsNotRestored = $false
     $comCreated = $false
     $comNotHidden = $false
+    $comPartial = $null
+    # A COM read that stopped before the end (timeout, count kept changing) keeps its rows. When the UIA scan cannot read the
+    # list either, they are returned marked partial / truncated on the FAILED result - never an empty list, never success.
+    # A UIA result that has rows of its own keeps them; the COM rows only add data.comPartial then.
+    $addPartial = {
+        param($Data, [bool]$Promote)
+        if ($null -eq $comPartial) { return }
+        $Data | Add-Member -NotePropertyName 'comPartial' -NotePropertyValue $comPartial -Force
+        if ($Promote) {
+            $Data | Add-Member -NotePropertyName 'partial' -NotePropertyValue $true -Force
+            $Data | Add-Member -NotePropertyName 'truncated' -NotePropertyValue $true -Force
+            $Data | Add-Member -NotePropertyName 'source' -NotePropertyValue 'ErrorList(COM)' -Force
+            $Data | Add-Member -NotePropertyName 'errors' -NotePropertyValue @($comPartial.errors) -Force
+            if ($IncludeWarnings) { $Data | Add-Member -NotePropertyName 'warnings' -NotePropertyValue @($comPartial.warnings) -Force }
+            if ($IncludeMessages) { $Data | Add-Member -NotePropertyName 'messages' -NotePropertyValue @($comPartial.messages) -Force }
+            $Data | Add-Member -NotePropertyName 'partialRead' -NotePropertyValue ([PSCustomObject]@{
+                    reason = $comPartial.reason; errorsComplete = $comPartial.errorsComplete; warningsComplete = $comPartial.warningsComplete
+                    messagesComplete = $comPartial.messagesComplete; expected = $comPartial.expected; readMs = $comPartial.readMs; timing = $comPartial.timing
+                }) -Force
+        }
+    }
+    $partialText = {
+        param([string]$Message)
+        if ($null -eq $comPartial) { return $Message }
+        $n = @($comPartial.errors).Count
+        return "$Message The COM read stopped early ($([string]$comPartial.reason)) after $n error row(s) / $(@($comPartial.warnings).Count) warning row(s): they are in data.errors / data.warnings with partial = true, truncated = true. They are NOT the whole list: do not read them as complete or as 0 errors."
+    }
     $addFallback = {
         param($Data)
         if ($null -ne $comFallbackReason) { $Data | Add-Member -NotePropertyName 'fallbackReason' -NotePropertyValue $comFallbackReason -Force }
@@ -202,26 +254,21 @@
     if ($Source -eq 'Auto') {
         $comWatch = [System.Diagnostics.Stopwatch]::StartNew()
         $comMaxMs = [int][Math]::Min(8000, [Math]::Max(1000, $TimeoutSec * 250))
-        $com = Get-TcErrorListViaCom -IncludeWarnings ([bool]$IncludeWarnings) -IncludeMessages ([bool]$IncludeMessages) -MaxMs $comMaxMs `
-            -ExpectErrors:$ExpectErrors -BuildPaneText $BuildPaneText -RequireBuildSummary:$RequireBuildSummary
+        $comCapMs = [int][Math]::Max($comMaxMs, $TimeoutSec * 600)
+        $com = Get-TcErrorListViaCom -IncludeWarnings ([bool]$IncludeWarnings) -IncludeMessages ([bool]$IncludeMessages) -MaxMs $comMaxMs -CapMs $comCapMs `
+            -ExpectErrors:$ExpectErrors -ZeroErrorsKnown:$ZeroErrorsKnown -BuildPaneText $BuildPaneText -RequireBuildSummary:$RequireBuildSummary
         if ($com.accepted) { return (New-TcResult -Success $true -Data $com.data) }
         $comFallbackReason = [string]$com.reason
+        if ($null -ne $com.PSObject.Properties['partial'] -and $null -ne $com.partial) { $comPartial = $com.partial }
         if ($null -ne $com.PSObject.Properties['flagsRestored'] -and -not [bool]$com.flagsRestored) { $comFlagsNotRestored = $true }
         if ($null -ne $com.PSObject.Properties['errorListCreated'] -and [bool]$com.errorListCreated) { $comCreated = $true }
         if ($null -ne $com.PSObject.Properties['errorListHidden'] -and -not [bool]$com.errorListHidden) { $comNotHidden = $true }
         $uiaTimeoutSec = [Math]::Max(1, $TimeoutSec - [int][Math]::Ceiling($comWatch.Elapsed.TotalSeconds))
         Write-Verbose "Get-TcBuildErrors: COM read not used ($comFallbackReason); UI Automation scan."
     }
-    # Make sure the tool window is shown (auto-hidden / closed windows are invisible to UIA).
-    try {
-        Invoke-TcComRetry -MaxRetries 2 -OperationName 'View.ErrorList' -TimeoutSec 30 -ScriptBlock {
-            $script:TcDte.ExecuteCommand('View.ErrorList')  # tcauto-allow(executecommand): opens the XAE Error List window to read it, no TwinCAT command
-        } | Out-Null
-        Start-Sleep -Milliseconds 300
-    }
-    catch {
-        Write-Verbose "Get-TcBuildErrors: View.ErrorList failed ($($_.Exception.Message)); reading whatever is visible."
-    }
+    # The Error List is NOT opened here (PR #332 real-machine report item 4): ExecuteCommand('View.ErrorList') restored a minimized
+    # VS2022 and pulled it to the foreground. An Error List that is not on screen is invisible to UIA: ERRORLIST_UNAVAILABLE below,
+    # with the instruction to open it. (The COM read above creates the window hidden, it never shows it.)
 
     $timedOut = $false
     $scanError = $null
@@ -245,9 +292,11 @@
         $why = if ($timedOut) { "UI Automation scan did not finish within $TimeoutSec s" }
                elseif ($null -ne $scanError) { "UI Automation scan failed: $scanError" }
                elseif ($null -ne $scan -and $scan.Notes.Count -gt 0) { [string]($scan.Notes -join '; ') }
-               else { 'Error List window not found in the IDE process' }
+               else { 'Error List window not found in the IDE process (not on screen; TcAuto does not open it, that would restore / activate the IDE window: open View > Error List once in the IDE, then retry)' }
         $data = [PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)' }
         & $addFallback $data
+        & $addPartial $data $true
+        $why = & $partialText $why
         if ($null -ne $scan) { $data | Add-Member -NotePropertyName 'notes' -NotePropertyValue @($scan.Notes) }
         if ($null -ne $cleanupWarning) { $data | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning }
         return New-TcResult -Success $false -ErrorMessage "ERRORLIST_UNAVAILABLE: $why" -ErrorCode 'ERRORLIST_UNAVAILABLE' `
@@ -320,6 +369,8 @@
     }
     & $addFallback $data
     if ($shortfall.Count -gt 0 -or $scopeFiltered) {
+        # the COM rows that were read before it stopped are kept next to the UIA rows (comPartial), never dropped
+        & $addPartial $data $false
         $data | Add-Member -NotePropertyName 'incomplete' -NotePropertyValue $true
         # $true when a count button read "X / Y" (shown / total): the totals do not depend on the scope
         $data | Add-Member -NotePropertyName 'countsTotalForm' -NotePropertyValue ($null -ne $scan.PSObject.Properties['CountsTotalForm'] -and [bool]$scan.CountsTotalForm)

@@ -131,17 +131,18 @@ namespace TcAutomation
                 return items.Count;
             }
 
-            public ErrorListComRow RowAt(int index1)
+            // 5 cross-process reads per row (Item, Description, FileName, Line, Project; 6 with the level): the first version
+            // also read Column (a constant 1, never used) and always read ErrorLevel (PR #332 real-machine report item 2).
+            public ErrorListComRow RowAt(int index1, bool withLevel)
             {
                 ErrorItem it = items.Item(index1);
                 try
                 {
                     var r = new ErrorListComRow();
-                    r.Level = (int)it.ErrorLevel;
+                    if (withLevel) r.Level = (int)it.ErrorLevel;
                     r.Description = it.Description;
                     r.FileName = it.FileName;
                     r.Line = it.Line;
-                    r.Column = it.Column;
                     r.Project = it.Project;
                     return r;
                 }
@@ -160,6 +161,11 @@ namespace TcAutomation
         public static ErrorListComResult Read(object dte, int settleMs, int maxMs, bool[] originalFlags)
         {
             using (var s = new DteSource(dte)) return ErrorListComCore.Run(s, settleMs, maxMs, originalFlags);
+        }
+
+        public static ErrorListComResult Read(object dte, ErrorListComOptions options, bool[] originalFlags)
+        {
+            using (var s = new DteSource(dte)) return ErrorListComCore.Run(s, options, originalFlags);
         }
     }
 }

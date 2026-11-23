@@ -11,6 +11,12 @@
 #   G  Get-TcBuildErrors: COM accepted (UIA not started) / COM rejected -> UIA with data.fallbackReason / -Source UIA / busy guard first
 #   H  Get-TcErrorListSummary hands -ExpectErrors / -BuildPaneText / -RequireBuildSummary / -Source on and exposes the source
 #   I  callers: Build / CheckAllObjects pass what the COM cross-check needs
+#   K  PR #332 real-machine report (head 6f4dfd2 / 456c5e7), the five points:
+#        item 8  standalone GetBuildErrors with text in the search box: never success + 0 errors that nothing proves (E16-E23, F19-F22, G8)
+#        item 2  rows read before a timeout are kept and marked partial (F23, G9, G10), budget / fetch / level options reach the reader (F25-F27)
+#        item 3  build summary regex: English / zh-TW real strings, language independent, last-summary-only (E0b / R*)
+#        item 4  the UIA fallback never opens, shows or activates a window (G11, J6)
+#        item 5  restore proven by its own readback: errorlist-com-reader-332.ps1 N1 / N3
 #   J  the C# files only read (no ExecuteCommand, no window state), the window is never created, and they compile when the EnvDTE assemblies exist
 #   powershell.exe -NoProfile -File tests/Unit/errorlist-com-item88.ps1
 # Exit code = number of failed checks.
@@ -36,6 +42,7 @@ $zhProject = -join @([char]0x76ee, [char]0x524d, [char]0x7684, [char]0x5c08, [ch
 $zhBuild = -join @([char]0x7d44, [char]0x5efa)
 $zhSucceeded = -join @([char]0x6210, [char]0x529f, [char]0x6216, [char]0x5df2, [char]0x66f4, [char]0x65b0)
 $zhFailed = -join @([char]0x5931, [char]0x6557)
+$zhSkipped = -join @([char]0x7565, [char]0x904e)
 $zhUnit = [string][char]0x500b
 $zhComma = [string][char]0xff0c
 
@@ -124,6 +131,31 @@ try {
     $zhLine = "========= ${zhBuild}: ${zhSucceeded} 2 ${zhUnit}${zhComma}${zhFailed} 1 ${zhUnit}${zhComma}x 0 ${zhUnit}=========="
     $s = & $sm $zhLine
     Check 'E0 zh-TW MSBuild summary (measured 2026-11-09 form) -> failedProjects 1' ($s.found -and $s.failedProjects -eq 1) (J $s)
+    # PR #332 real-machine report item 3: the REAL strings of the build pane (4026 XAE, VS2022, 4024; 2026-11-23/24)
+    $realFail = '========== Build: 0 succeeded or up-to-date, 2 failed, 0 skipped =========='
+    $s = & $sm $realFail
+    Check 'R1 real English MSBuild line with failures ("0 succeeded or up-to-date, 2 failed, 0 skipped") -> found, failedProjects 2 (the old pattern did not match "or up-to-date")' ($s.found -and $s.failedProjects -eq 2 -and $null -eq $s.errors) (J $s)
+    $s = & $sm '========== Build: 2 succeeded or up-to-date, 0 failed, 0 skipped =========='
+    Check 'R2 real English MSBuild line, clean -> found, failedProjects 0' ($s.found -and $s.failedProjects -eq 0) (J $s)
+    $zhReal = "========= ${zhBuild}: ${zhSucceeded} 2 ${zhUnit}${zhComma}${zhFailed} 0 ${zhUnit}${zhComma}${zhSkipped} 0 ${zhUnit} =========="
+    $s = & $sm $zhReal
+    Check 'R3 real zh-TW VS2022 line (succeeded-or-updated 2, failed 0, skipped 0) -> found, failedProjects 0' ($s.found -and $s.failedProjects -eq 0) (J $s)
+    $s = & $sm "========= ${zhBuild}: ${zhSucceeded} 0 ${zhUnit}${zhComma}${zhFailed} 2 ${zhUnit}${zhComma}${zhSkipped} 0 ${zhUnit} =========="
+    Check 'R3 zh-TW line with 2 failed -> failedProjects 2' ($s.found -and $s.failedProjects -eq 2) (J $s)
+    $s = & $sm "========= ${zhBuild}$([char]0xff1a) ${zhSucceeded} 0 ${zhUnit}${zhComma}${zhFailed} 3 ${zhUnit} =========="
+    Check 'R3 full-width colon after the label is accepted too' ($s.found -and $s.failedProjects -eq 3) (J $s)
+    $s = & $sm '========== Erstellen: 0 erfolgreich oder aktuell, 2 fehlgeschlagen, 0 uebersprungen =========='
+    Check 'R4 language independent: a German line (no word the module knows) -> failedProjects 2 (the second count is the failed count)' ($s.found -and $s.failedProjects -eq 2) (J $s)
+    $s = & $sm '========== Rebuild All: 1 succeeded, 1 failed, 0 skipped =========='
+    Check 'R5 Rebuild All label -> failedProjects 1' ($s.found -and $s.failedProjects -eq 1) (J $s)
+    $s = & $sm "========== Something without numbers ==========`r`n===== not a summary`r`nBuild: 3 succeeded"
+    Check 'R6 lines that are not a comma list of counts are not a summary' (-not $s.found) (J $s)
+    $two = "Build complete -- 6 errors, 25 warnings`r`n$realFail`r`nBuild complete -- 0 errors, 11 warnings`r`n========== Build: 2 succeeded or up-to-date, 0 failed, 0 skipped =========="
+    $sumAll = & $sm $two
+    $sumLast = & $mod { param($t) ConvertFrom-TcBuildPaneSummary -Text $t -LastOnly } $two
+    Check 'R7 pane of two builds: the default SUMS them (6 errors / 2 failed), -LastOnly takes the last of each (0 / 0)' ($sumAll.errors -eq 6 -and $sumAll.failedProjects -eq 2 -and $sumLast.errors -eq 0 -and $sumLast.failedProjects -eq 0 -and $sumLast.found) ("all=$(J $sumAll) last=$(J $sumLast)")
+    $s = & $sm $realFail
+    Check 'R8 PLC online (XAE does not compile): the MSBuild line alone is a summary' ($s.found -and $null -eq $s.errors -and $s.failedProjects -eq 2) (J $s)
     $s = & $sm "Main.TcPOU(1) : error: C0046: x`r`nGenerate code..."
     Check 'E0 compiler lines without an end summary -> not found (a filtered list cannot be ruled out)' (-not $s.found) (J $s)
     Check 'E0 empty / $null text -> not found' (-not (& $sm '').found -and -not (& $sm $null).found) ''
@@ -185,6 +217,41 @@ try {
     $v = & $verdict (& $com -all 0) 0 0 0 $false $null $null $false $sumNone
     Check 'E15 without -RequireBuildSummary a missing summary is no reason (diagnostic callers)' ($v.accept) (J $v)
 
+    # --- E16-E23: standalone verdict (PR #332 real-machine report item 8: search box text -> 0 rows looked like a clean build) ---
+    $verdictS = { param($c, $e, $iso, $stale, $zk = $false, $expect = $false, $standalone = $true)
+        & $mod { param($c, $e, $iso, $stale, $zk, $expect, $sa) Get-TcErrorListComVerdict -Com $c -ErrorRows $e -IsolatedTotal $iso -Standalone:$sa -StaleSummary $stale -ZeroErrorsKnown:$zk -ExpectErrors:$expect } $c $e $iso $stale $zk $expect $standalone }
+    $stSix = [PSCustomObject]@{ found = $true; errors = 6; failedProjects = $null; lines = @('Build complete -- 6 errors') }
+    $stFail = [PSCustomObject]@{ found = $true; errors = $null; failedProjects = 2; lines = @('failed 2') }
+    $stZero = [PSCustomObject]@{ found = $true; errors = 0; failedProjects = $null; lines = @('Build complete -- 0 errors') }
+    $stNone = [PSCustomObject]@{ found = $false; errors = $null; failedProjects = $null; lines = @() }
+    $v = & $verdictS (& $com -all 0) 0 0 $stSix
+    Check 'E16 standalone, COM 0 rows, the last build summary says 6 errors (search box text hides them) -> fewer-errors-than-last-build-summary' (-not $v.accept -and $v.reason -match '^fewer-errors-than-last-build-summary') (J $v)
+    $v = & $verdictS (& $com -all 0) 0 0 $stFail
+    Check 'E17 standalone, COM 0 rows, the last MSBuild summary says 2 failed -> fewer-errors-than-last-build-summary' (-not $v.accept -and $v.reason -match '^fewer-errors-than-last-build-summary') (J $v)
+    $v = & $verdictS (& $com -all 0) 0 0 $stNone
+    Check 'E18 standalone, COM 0 rows, no summary anywhere -> errors-zero-unverified (never an accepted 0)' (-not $v.accept -and $v.reason -match '^errors-zero-unverified') (J $v)
+    $v = & $verdictS (& $com -all 0) 0 0 $null
+    Check 'E18 standalone, no pane at all ($null summary) -> errors-zero-unverified' (-not $v.accept -and $v.reason -match '^errors-zero-unverified') (J $v)
+    $v = & $verdictS (& $com -all 0) 0 0 $stZero
+    Check 'E19 standalone, COM 0 rows, the last summary says 0 errors -> accepted, verifiedBy last-build-summary' ($v.accept -and $v.verifiedBy -eq 'last-build-summary') (J $v)
+    $v = & $verdictS (& $com -all 0) 0 0 $stNone $true
+    Check 'E20 standalone, COM 0 rows, -ZeroErrorsKnown (CheckAllObjects returned True) -> accepted, verifiedBy caller-confirmed-no-errors' ($v.accept -and $v.verifiedBy -eq 'caller-confirmed-no-errors') (J $v)
+    $v = & $verdictS (& $com -all 3) 3 3 $stNone
+    Check 'E21 standalone, 3 error rows, no summary -> accepted (a filter only hides rows), verifiedBy none, a note says it is a lower bound' ($v.accept -and $v.verifiedBy -eq 'none' -and (@($v.notes) -join ' ') -match 'lower bound') (J $v)
+    $v = & $verdictS (& $com -all 6) 6 6 $stSix
+    Check 'E22 standalone, 6 rows and the summary says 6 -> accepted' ($v.accept -and $v.verifiedBy -eq 'last-build-summary') (J $v)
+    $stEight = [PSCustomObject]@{ found = $true; errors = 8; failedProjects = $null; lines = @('Build complete -- 8 errors') }
+    $v = & $verdictS (& $com -all 6) 6 6 $stEight
+    Check 'E22 standalone, 6 rows but the summary says 8 -> rejected' (-not $v.accept -and $v.reason -match '^fewer-errors-than-last-build-summary') (J $v)
+    $v = & $verdictS (& $com -all 0) 0 0 $stNone $false $false $false
+    Check 'E23 NOT standalone (the caller has its own proof): 0 rows with no summary stays accepted as before' ($v.accept) (J $v)
+    $v = & $verdictS (& $com -all 0) 0 0 $stNone $false $true
+    Check 'E23 -ExpectErrors with 0 rows is still rejected first (expected-errors-none-read)' (-not $v.accept -and $v.reason -match '^expected-errors-none-read') (J $v)
+    $comRestore = & $com -restored $false
+    $comRestore | Add-Member -NotePropertyName restoreNote -NotePropertyValue 'buttons before the read = True/False/True, after the restore = True/True/True'
+    $v = & $verdict $comRestore
+    Check 'E24 buttons not restored: the verdict note carries the before / after text of the readback (PR #332 item 5)' ($v.accept -and -not $v.flagsRestored -and (@($v.notes) -join ' ') -match 'after the restore = True/True/True') (J $v)
+
     # --- F: Get-TcErrorListViaCom with a mocked reader ---
     & $mod {
         $script:TcDte = [PSCustomObject]@{ Version = '17.0' }
@@ -195,12 +262,16 @@ try {
             [CmdletBinding()] param([scriptblock]$ScriptBlock, [int]$MaxRetries, [string]$OperationName, [int]$TimeoutSec)
             if ($OperationName -eq 'DTE.Version') { return $global:DteVersion }
             if ($OperationName -eq 'Read build output') { return $global:PaneRead }
+            if ($OperationName -eq 'View.ErrorList') { $global:ViewErrorListCalls++ }
             & $ScriptBlock
         }
-        function script:Read-TcErrorListCom { [CmdletBinding()] param([int]$MaxMs) $global:ReadCalls.Add($MaxMs) | Out-Null; $global:ComRead }
+        function script:Read-TcErrorListCom { [CmdletBinding()] param([int]$MaxMs, [int]$CapMs, [bool]$FetchWarnings = $true, [bool]$FetchMessages = $true, [bool]$ReadLevel = $true) $global:ReadCalls.Add($MaxMs) | Out-Null; $global:ReadArgs = @{ MaxMs = $MaxMs; CapMs = $CapMs; W = $FetchWarnings; M = $FetchMessages; L = $ReadLevel }; $global:ComRead }
         function script:Get-TcBuildOutputPane { [CmdletBinding()] param($Dte) $global:PaneRead }
     }
     $global:ReadCalls = [System.Collections.ArrayList]::new()
+
+    $global:ReadArgs = $null
+    $global:ViewErrorListCalls = 0
     $global:ComTypes = $null
     $global:DteVersion = '17.0'
     $global:PaneRead = [PSCustomObject]@{ status = 'unreadable'; text = '' }
@@ -211,6 +282,10 @@ try {
         $d = @{ ok = $true; reason = ''; error = ''; caption = 'Error List'; allCount = 0; flagsRestored = $true; flagsChanged = $true; flagsBefore = @($true, $false, $false); ms = 12.5
             errors = @(); warnings = @(); messages = @() }
         foreach ($k in $o.Keys) { $d[$k] = $o[$k] }
+    # the counts of the isolated reads (the C# reader reports them; the rows alone were enough before it fetched only what is asked for)
+    if (-not $d.ContainsKey('errorCount')) { $d['errorCount'] = @($d.errors).Count }
+    if (-not $d.ContainsKey('warningCount')) { $d['warningCount'] = @($d.warnings).Count }
+    if (-not $d.ContainsKey('messageCount')) { $d['messageCount'] = @($d.messages).Count }
         $global:ComRead = [PSCustomObject]$d
     }
     function ViaCom([hashtable]$p = @{}) { & $mod { param($h) Get-TcErrorListViaCom @h } $p }
@@ -222,7 +297,7 @@ try {
     $r = ViaCom @{ IncludeMessages = $true; BuildPaneText = "Main.TcPOU(209) : error: C0046: Identifier 'a' not defined`nFB.TcPOU@M(210) : error: C0046: Identifier 'b' not defined" }
     Check 'F1 4026: accepted, source COM, severities from the flags, no level table' ($r.accepted -and $r.data.source -eq 'ErrorList(COM)' -and $r.data.counts.errors -eq 2 -and $r.data.counts.warnings -eq 1 -and $r.data.counts.messages -eq 1 -and $r.data.comRead.severityBy -eq 'ShowFlags' -and $r.data.comRead.levelCheck -eq 'no-table') (J $r)
     Check 'F1 UIA-compatible items: file (Impl), project name, line, column null; codes from the fresh pane' ($r.data.errors[0].file -eq 'Main.TcPOU (Impl)' -and $r.data.errors[0].project -eq 'Plc' -and $r.data.errors[0].line -eq 45 -and $null -eq $r.data.errors[0].column -and $r.data.errors[0].code -eq 'C0046' -and $r.data.errors[1].code -eq 'C0046' -and $r.data.comRead.paneCrossCheck) (J $r.data.errors)
-    Check 'F1 scope carried like the UIA result (entire $true), messages present, errorsWithoutCode 0, levels recorded (N6)' ($r.data.scope.entire -eq $true -and @($r.data.messages).Count -eq 1 -and $r.data.comRead.errorsWithoutCode -eq 0 -and $r.data.truncated -eq $false -and $r.data.comRead.levelCounts -match 'Error\[level 2\]=2') (J $r.data.comRead)
+    Check 'F1 scope carried like the UIA result (entire $true), messages present, errorsWithoutCode 0, levels not read on a host without a level table (item 2: one COM call less per row)' ($r.data.scope.entire -eq $true -and @($r.data.messages).Count -eq 1 -and $r.data.comRead.errorsWithoutCode -eq 0 -and $r.data.truncated -eq $false -and $r.data.comRead.levelCounts -eq 'not-read') (J $r.data.comRead)
     $r2 = ViaCom @{ IncludeWarnings = $false }
     Check 'F1 -IncludeWarnings:$false: no warnings array, no messages array' ($null -eq $r2.data.PSObject.Properties['warnings'] -and $null -eq $r2.data.PSObject.Properties['messages']) ''
     $r3 = ViaCom @{}
@@ -259,8 +334,8 @@ try {
     Check 'F8 helper not compilable -> rejected with its reason, reader not called' (-not $r.accepted -and $r.reason -eq 'com-helper-unavailable: csc blocked' -and $global:ReadCalls.Count -eq $before) (J $r)
     $global:ComTypes = $null
     Set-Com @{ allCount = 0 }
-    $r = ViaCom @{}
-    Check 'F9 empty list, Entire Solution scope, no failure expected, no summary required -> accepted with 0 / 0 / 0' ($r.accepted -and $r.data.counts.errors -eq 0 -and @($r.data.errors).Count -eq 0) (J $r)
+    $r = ViaCom @{ ZeroErrorsKnown = $true }
+    Check 'F9 empty list, Entire Solution scope, the caller knows there is no error (-ZeroErrorsKnown) -> accepted with 0 / 0 / 0' ($r.accepted -and $r.data.counts.errors -eq 0 -and @($r.data.errors).Count -eq 0) (J $r)
     Set-Com @{ allCount = 3; errors = @((Row 2 'e')); warnings = @((Row 2 'w')) }
     $r = ViaCom @{}
     Check 'F10 isolated reads add up to 2 but all-flags count is 3 -> rejected severity-isolation-mismatch' (-not $r.accepted -and $r.reason -match '^severity-isolation-mismatch') (J $r)
@@ -282,12 +357,65 @@ try {
     Set-Com @{ ok = $false; reason = 'errorlist-create-failed' }
     $r = ViaCom @{}
     Check 'F15 Error List window could not be created (S7): rejected errorlist-create-failed, nothing created' (-not $r.accepted -and $r.reason -eq 'errorlist-create-failed' -and -not $r.errorListCreated) (J $r)
-    Set-Com @{ created = $true; hiddenRestored = $true }
+    Set-Com @{ created = $true; hiddenRestored = $true; errors = @((Row 2 'e')); allCount = 1 }
     $r = ViaCom @{}
     Check 'F16 Error List tab created by this read and hidden again: accepted, comRead.errorListCreated = true, errorListHidden = true' ($r.accepted -and $r.errorListCreated -and $r.errorListHidden -and $r.data.comRead.errorListCreated -and $r.data.comRead.errorListHidden) (J $r.data.comRead)
-    Set-Com @{ created = $true; hiddenRestored = $false }
+    Check 'F16 the result says the IDE window list was changed (layoutChanged = true) and that the tab is hidden again, so the visible layout is as before' ($r.data.comRead.layoutChanged -eq $true -and (@($r.data.comRead.notes) -join ' ') -match 'put it back to hidden') (J $r.data.comRead)
+    Set-Com @{ created = $true; hiddenRestored = $false; errors = @((Row 2 'e')); allCount = 1 }
     $r = ViaCom @{}
     Check 'F17 created but could not be hidden again: accepted, errorListHidden = false reported (not faked)' ($r.accepted -and $r.errorListCreated -and -not $r.errorListHidden -and -not $r.data.comRead.errorListHidden) (J $r.data.comRead)
+    Check 'F17 layoutChanged = true and a note says the window may be visible' ($r.data.comRead.layoutChanged -eq $true -and (@($r.data.comRead.notes) -join ' ') -match 'may be visible') (J $r.data.comRead)
+    Set-Com @{ allCount = 1; errors = @((Row 2 'e')) }
+    $r = ViaCom @{}
+    Check 'F17b window already there (c2 path): layoutChanged = false, no layout note, errorListCreated false' ($r.accepted -and $r.data.comRead.layoutChanged -eq $false -and -not $r.errorListCreated -and (@($r.data.comRead.notes) -join ' ') -notmatch 'hidden') (J $r.data.comRead)
+
+    # --- F18-F27: PR #332 real-machine report ---
+    $msbuildOnly = '========== Build: 0 succeeded or up-to-date, 2 failed, 0 skipped =========='
+    Set-Com @{ allCount = 2; errors = @((Row 2 "Identifier 'a' not defined"), (Row 2 "Identifier 'b' not defined" 'C:\p\Main.TcPOU (Impl)' 46)) }
+    $r = ViaCom @{ RequireBuildSummary = $true; BuildPaneText = $msbuildOnly }
+    Check 'F18 item 3 / 7: PLC online (XAE does not compile), only the real MSBuild line in the pane: accepted by -RequireBuildSummary (before: build-summary-missing)' ($r.accepted -and $r.data.comRead.buildSummary -match 'Build: 0 succeeded or up-to-date, 2 failed') (J $r)
+    $paneSix = "Build complete -- 6 errors, 25 warnings : No download possible`n$msbuildOnly"
+    $global:PaneRead = [PSCustomObject]@{ status = 'read'; text = $paneSix }
+    Set-Com @{ allCount = 0 }
+    $r = ViaCom @{}
+    Check 'F19 item 8: search box text, COM 0 rows, the pane of the last build says 6 errors -> NOT accepted, fewer-errors-than-last-build-summary (the report: success, 0 errors)' (-not $r.accepted -and $r.reason -match '^fewer-errors-than-last-build-summary') (J $r)
+    $global:PaneRead = [PSCustomObject]@{ status = 'unreadable'; text = '' }
+    $r = ViaCom @{}
+    Check 'F20 COM 0 rows, no readable pane -> errors-zero-unverified, no partial' (-not $r.accepted -and $r.reason -match '^errors-zero-unverified' -and $null -eq $r.partial) (J $r)
+    $global:PaneRead = [PSCustomObject]@{ status = 'read'; text = "Build complete -- 0 errors, 12 warnings : Ready for download" }
+    $r = ViaCom @{}
+    Check 'F21 COM 0 rows and the last build summary says 0 errors -> accepted, verifiedBy last-build-summary, the summary line is in comRead.buildSummary' ($r.accepted -and $r.data.comRead.verifiedBy -eq 'last-build-summary' -and $r.data.comRead.buildSummary -match '0 errors') (J $r.data.comRead)
+    $global:PaneRead = [PSCustomObject]@{ status = 'unreadable'; text = '' }
+    $r = ViaCom @{ ZeroErrorsKnown = $true }
+    Check 'F22 -ZeroErrorsKnown: accepted without a pane' ($r.accepted -and $r.data.comRead.verifiedBy -eq 'caller-confirmed-no-errors') (J $r.data.comRead)
+    $r = ViaCom @{ ExpectErrors = $true }
+    Check 'F22b -ExpectErrors with 0 rows: still expected-errors-none-read' (-not $r.accepted -and $r.reason -match '^expected-errors-none-read') (J $r)
+
+    # partial: the read stopped (timeout) after some rows
+    Set-Com @{ ok = $false; reason = 'timeout'; errorsComplete = $false; warningsComplete = $false; messagesComplete = $false; errorCount = -1; warningCount = -1; messageCount = -1
+        errors = @((Row 2 'e1'), (Row 2 'e2'), (Row 2 'e3')); warnings = @() }
+    $r = ViaCom @{}
+    Check 'F23 item 2: a COM read that ran out of time is rejected, but the 3 error rows it read are in partial (not an empty list), errorsComplete = false, no expected count' (-not $r.accepted -and $r.reason -eq 'com-read-failed:timeout' -and $null -ne $r.partial -and @($r.partial.errors).Count -eq 3 -and -not $r.partial.errorsComplete -and $null -eq $r.partial.expected.errors -and $r.partial.reason -eq 'timeout') (J $r.partial)
+    Set-Com @{ ok = $false; reason = 'timeout' }
+    $r = ViaCom @{}
+    Check 'F23 nothing read -> no partial object' (-not $r.accepted -and $null -eq $r.partial) (J $r)
+
+    # options reach the reader
+    Set-Com @{ allCount = 1; errors = @((Row 2 'e')); timing = 'flagSets=10 flagSetMs=1'; budgetMs = 9100 }
+    $r = ViaCom @{ MaxMs = 2000; CapMs = 9000 }
+    Check 'F25 timing text and the budget are in comRead; the reader got MaxMs <= 2000 and a CapMs above it (the budget grows with the rows)' ($r.accepted -and $r.data.comRead.timing -eq 'flagSets=10 flagSetMs=1' -and $r.data.comRead.budgetMs -eq 9100 -and $global:ReadArgs.MaxMs -le 2000 -and $global:ReadArgs.CapMs -gt 2000 -and $global:ReadArgs.CapMs -le 9000) (J @{ args = $global:ReadArgs })
+    $r = ViaCom @{}
+    Check 'F26 4026 (DTE 17), warnings on, messages off: the reader fetches warnings, only counts messages, does not read ErrorLevel' ($global:ReadArgs.W -eq $true -and $global:ReadArgs.M -eq $false -and $global:ReadArgs.L -eq $false) (J $global:ReadArgs)
+    $r = ViaCom @{ IncludeWarnings = $false; IncludeMessages = $true }
+    Check 'F26 -IncludeWarnings:$false -IncludeMessages: the flags follow' ($global:ReadArgs.W -eq $false -and $global:ReadArgs.M -eq $true) (J $global:ReadArgs)
+    $global:DteVersion = '15.0'
+    Set-Com @{ allCount = 2; errors = @((Row 4 'e')); warnings = @((Row 2 'w')) }
+    $r = ViaCom @{}
+    Check 'F27 4024 (DTE 15) has a level table: ErrorLevel is read (it is the cross-check), levelCheck agreed' ($global:ReadArgs.L -eq $true -and $r.accepted -and $r.data.comRead.levelCheck -eq 'agreed' -and $r.data.comRead.levelCounts -match 'Error\[level 4\]=1') (J $r.data.comRead)
+    $global:DteVersion = '17.0'
+    Set-Com @{ allCount = 6; errors = @((Row 2 'e')); warningCount = 5; warnings = @() }
+    $r = ViaCom @{ IncludeWarnings = $false }
+    Check 'F28 warnings counted but not fetched: counts.warnings = 5 (the sum check uses the count), no warnings array' ($r.accepted -and $r.data.counts.warnings -eq 5 -and $null -eq $r.data.PSObject.Properties['warnings']) (J $r.data.counts)
 
     # --- G: Get-TcBuildErrors ---
     & $mod {
@@ -345,10 +473,45 @@ try {
     Check 'G7 dropped leftover scan (mayBeRunning): refused too, COM not called (S2)' (-not $r.success -and $r.data.scanMayBeRunning -eq $true -and $global:ReadCalls.Count -eq $before) (J $r.data)
     & $mod { $script:TcErrorListScanBusy = $false; $script:TcUiaCleanupMayBeRunning = $false }
 
+    # G8 item 8 end to end: search box text -> COM 0 rows, pane of the last build says 6 errors; the UIA scan compares with the button total (6)
+    $global:PaneRead = [PSCustomObject]@{ status = 'read'; text = "Build complete -- 6 errors, 25 warnings`n$msbuildOnly" }
+    Set-Com @{ allCount = 0 }
+    $global:UiaResult = [PSCustomObject]@{
+        Found = $true; Rows = @(); Truncated = $false; ToggleUsed = $true; Notes = @('mock'); Headers = @()
+        Counts = [PSCustomObject]@{ errors = 6; warnings = 0; messages = 0 }
+        Scope = [PSCustomObject]@{ before = 'Entire Solution'; after = 'Entire Solution'; entire = $true; switched = $false }; CountsTotalForm = $true }
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'G8 item 8: standalone GetBuildErrors with a search text: NOT success with 0 errors; the UIA scan decides (0 of 6 -> ERRORLIST_INCOMPLETE), fallbackReason names the summary' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and $r.data.fallbackReason -match '^fewer-errors-than-last-build-summary' -and $r.data.source -eq 'ErrorList(UIA)') (J $r.error)
+    $global:PaneRead = [PSCustomObject]@{ status = 'unreadable'; text = '' }
+    $global:UiaResult = [PSCustomObject]@{ Found = $false; Rows = @(); Truncated = $false; ToggleUsed = $false; Notes = @(); Headers = @(); Counts = $null }
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'G8 COM 0 rows, no pane, UIA cannot read: ERRORLIST_UNAVAILABLE with fallbackReason errors-zero-unverified (the answer is "not known", not "0 errors")' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.data.fallbackReason -match '^errors-zero-unverified') (J $r.error)
+
+    # G9 / G10 item 2: partial rows are kept when the COM read stopped and UIA cannot do better
+
+    Set-Com @{ ok = $false; reason = 'timeout'; errorsComplete = $false; warningsComplete = $false; messagesComplete = $false; errorCount = -1; warningCount = -1; messageCount = -1
+        errors = @((Row 2 'e1'), (Row 2 'e2'), (Row 2 'e3')); warnings = @((Row 2 'w1'), (Row 2 'w2')) }
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'G9 COM stopped after 3 error / 2 warning rows, UIA cannot find the window: success = $false, ERRORLIST_UNAVAILABLE, but data.errors holds the 3 rows with partial = true / truncated = true' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.data.partial -eq $true -and $r.data.truncated -eq $true -and @($r.data.errors).Count -eq 3 -and @($r.data.warnings).Count -eq 2 -and $r.data.source -eq 'ErrorList(COM)') (J $r.data)
+    Check 'G9 partialRead says why and which severity is complete; the message says the rows are not the whole list' ($r.data.partialRead.reason -eq 'timeout' -and $r.data.partialRead.errorsComplete -eq $false -and $r.error.message -match 'partial = true' -and $r.error.message -match 'NOT the whole list') (J $r.data.partialRead)
+    Check 'G9 the callers (Get-TcErrorListReadState) do not take rows of an UNAVAILABLE result' (-not ((& $mod { param($x) Get-TcErrorListReadState -Result $x } $r).usable)) ''
+    $global:UiaResult = [PSCustomObject]@{
+        Found = $true; Rows = @(); Truncated = $false; ToggleUsed = $true; Notes = @('mock'); Headers = @()
+        Counts = [PSCustomObject]@{ errors = 529; warnings = 0; messages = 0 }
+        Scope = [PSCustomObject]@{ before = 'Entire Solution'; after = 'Entire Solution'; entire = $true; switched = $false }; CountsTotalForm = $true }
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'G10 COM partial and UIA reads 0 of 529: ERRORLIST_INCOMPLETE keeps its own data; the COM rows are next to it in data.comPartial (3 error rows)' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and @($r.data.comPartial.errors).Count -eq 3 -and $r.data.comPartial.reason -eq 'timeout') (J $r.data)
+
+    # G11 item 4: the UIA fallback never runs View.ErrorList (it restored a minimized VS2022 and took the foreground)
+    $global:UiaResult = [PSCustomObject]@{ Found = $false; Rows = @(); Truncated = $false; ToggleUsed = $false; Notes = @(); Headers = @(); Counts = $null }
+    Set-Com @{ caption = 'Error List - Open Documents'; allCount = 1; errors = @((Row 2 'e')) }
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'G11 item 4: Error List not on screen, UIA cannot find it: ERRORLIST_UNAVAILABLE that says TcAuto does not open it (View > Error List once); View.ErrorList was never executed in any Get-TcBuildErrors run of section G' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.error.message -match 'does not open it' -and $r.error.message -match 'View > Error List' -and $global:ViewErrorListCalls -eq 0) (J $r.error)
+
     # --- H: summary pass-through ---
     & $mod {
-        function script:Get-TcBuildErrors { [CmdletBinding()] param([switch]$IncludeWarnings, [int]$TimeoutSec, [switch]$ExpectErrors, [string]$BuildPaneText, [switch]$RequireBuildSummary, [string]$Source)
-            $global:SeenArgs = @{ ExpectErrors = [bool]$ExpectErrors; Pane = $BuildPaneText; Timeout = $TimeoutSec; Require = [bool]$RequireBuildSummary; Source = $Source }
+        function script:Get-TcBuildErrors { [CmdletBinding()] param([switch]$IncludeWarnings, [int]$TimeoutSec, [switch]$ExpectErrors, [switch]$ZeroErrorsKnown, [string]$BuildPaneText, [switch]$RequireBuildSummary, [string]$Source)
+            $global:SeenArgs = @{ ExpectErrors = [bool]$ExpectErrors; Zero = [bool]$ZeroErrorsKnown; Pane = $BuildPaneText; Timeout = $TimeoutSec; Require = [bool]$RequireBuildSummary; Source = $Source }
             [PSCustomObject]@{ success = $true; error = $null; data = [PSCustomObject]@{
                     counts = [PSCustomObject]@{ errors = 0; warnings = 0; messages = 0 }; errors = @(); warnings = @(); truncated = $false
                     source = 'ErrorList(UIA)'; fallbackReason = 'scope-not-entire: x' } }
@@ -357,8 +520,10 @@ try {
     $s = & $mod { Get-TcErrorListSummary -TimeoutSec 30 -ExpectErrors -BuildPaneText 'PANE' -RequireBuildSummary }
     Check 'H1 summary hands ExpectErrors / BuildPaneText / TimeoutSec / RequireBuildSummary to Get-TcBuildErrors' ($global:SeenArgs.ExpectErrors -and $global:SeenArgs.Pane -eq 'PANE' -and $global:SeenArgs.Timeout -eq 30 -and $global:SeenArgs.Require) (J $global:SeenArgs)
     Check 'H1 summary exposes errorListSource / errorListFallbackReason' ($s.errorListSource -eq 'ErrorList(UIA)' -and $s.errorListFallbackReason -eq 'scope-not-entire: x') (J ($s | Select-Object errorListSource, errorListFallbackReason))
+    $null = & $mod { Get-TcErrorListSummary -ZeroErrorsKnown }
+    Check 'H1b -ZeroErrorsKnown is handed on' ($global:SeenArgs.Zero -eq $true) (J $global:SeenArgs)
     $null = & $mod { Get-TcErrorListSummary }
-    Check 'H2 without the new switches nothing extra is passed (old mocks / callers unchanged)' (-not $global:SeenArgs.ExpectErrors -and [string]::IsNullOrEmpty($global:SeenArgs.Pane) -and -not $global:SeenArgs.Require -and [string]::IsNullOrEmpty($global:SeenArgs.Source)) (J $global:SeenArgs)
+    Check 'H2 without the new switches nothing extra is passed (old mocks / callers unchanged)' (-not $global:SeenArgs.Zero -and -not $global:SeenArgs.ExpectErrors -and [string]::IsNullOrEmpty($global:SeenArgs.Pane) -and -not $global:SeenArgs.Require -and [string]::IsNullOrEmpty($global:SeenArgs.Source)) (J $global:SeenArgs)
     $null = & $mod { Get-TcErrorListSummary -Source UIA }
     Check 'H3 -Source UIA is handed on' ($global:SeenArgs.Source -eq 'UIA') (J $global:SeenArgs)
 
@@ -367,7 +532,7 @@ try {
     $build = [IO.File]::ReadAllText((Join-Path $pub 'Build-TcProject.ps1'))
     Check 'I1 Build-TcProject: ExpectErrors from LastBuildInfo > 0, the pane text of this build and -RequireBuildSummary go to the summary' ($build -match '-ExpectErrors:\$elExpectErrors -BuildPaneText\s+\$elPaneText -RequireBuildSummary' -and $build -match '\$elExpectErrors\s*=\s*\(\$null -ne \$failedProjects -and \[int\]\$failedProjects -gt 0\)') ''
     $test = [IO.File]::ReadAllText((Join-Path $pub 'Test-TcPlcProject.ps1'))
-    Check 'I2 Test-TcPlcProject (CheckAllObjects): ExpectErrors when the check returned False' ($test -match 'Get-TcErrorListSummary\s+-TimeoutSec\s+\$script:TcBuildErrorListTimeoutSec\s+-SplitRuntimeLog\s+-ExpectErrors:\(\$passed -eq \$false\)') ''
+    Check 'I2 Test-TcPlcProject (CheckAllObjects): ExpectErrors when the check returned False, ZeroErrorsKnown when it returned True' ($test -match 'Get-TcErrorListSummary\s+-TimeoutSec\s+\$script:TcBuildErrorListTimeoutSec\s+-SplitRuntimeLog\s+-ExpectErrors:\(\$passed -eq \$false\)\s+-ZeroErrorsKnown:\(\$passed -eq \$true\)') ''
 
     # --- J: the C# files ---
     $priv = Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\Private'
@@ -382,6 +547,14 @@ try {
     $openBody = $rd.Substring($openAt, $createAt - $openAt)
     Check 'J3 Open() looks the window up in DTE.Windows (FindWindow, ws.Item(i)) before it reads ToolWindows.ErrorList; only Create() reads ToolWindows.ErrorList without a window (S7)' ($rd.IndexOf('ws.Item(i)') -ge 0 -and $openBody.IndexOf('FindWindow') -ge 0 -and $openBody.IndexOf('FindWindow') -lt $openBody.IndexOf('ToolWindows.ErrorList') -and ([regex]::Matches($rd, 'ToolWindows\.ErrorList')).Count -eq 2) ''
     Check 'J4 every RCW the adapter obtains is released (N2): ErrorItem, ErrorItems, ErrorList, Window, Windows' (([regex]::Matches((& $strip $csRead), 'Release\(')).Count -ge 7 -and (& $strip $csRead) -match 'Release\(it\)' -and (& $strip $csRead) -match 'Release\(ws\)') ''
+    # J6 item 4: no code path of the COM / UIA read shows, restores or activates a window
+    $codeLines = { param($t) $t = [regex]::Replace($t, '(?s)<#.*?#>', ''); ($t -split "`n" | Where-Object { $_ -notmatch '^\s*(#|//)' }) -join "`n" }
+    $gbe = & $codeLines ([IO.File]::ReadAllText((Join-Path $pub 'Get-TcBuildErrors.ps1')))
+    $uiaSrc = & $codeLines ([IO.File]::ReadAllText((Join-Path $priv 'Get-TcIdeErrorList.ps1')))
+    $windowCalls = 'ExecuteCommand|View\.ErrorList|SetForegroundWindow|ShowWindow|SwitchToThisWindow|SetFocus|\.Activate\(|AppActivate|BringWindowToTop|WindowPattern|SetWindowVisualState|\.Restore\('
+    Check 'J6 item 4: Get-TcBuildErrors.ps1 has no ExecuteCommand / View.ErrorList / activate call in code (comments excluded)' ($gbe -notmatch $windowCalls) ([regex]::Match($gbe, $windowCalls).Value)
+    Check 'J6 item 4: the UIA scan (Get-TcIdeErrorList.ps1) never shows, focuses, restores or activates a window' ($uiaSrc -notmatch $windowCalls) ([regex]::Match($uiaSrc, $windowCalls).Value)
+    Check 'J7 item 2: the DTE adapter reads no Column (constant 1, unused) and ErrorLevel only under withLevel' ((& $strip $csRead) -notmatch '\.Column\b' -and (& $strip $csRead) -match 'if \(withLevel\) r\.Level = \(int\)it\.ErrorLevel') ''
     $paths = & $mod { Get-TcErrorListComAssemblyPaths -IdeProcessId 0 }
     if ($null -eq $paths) {
         Check 'J5 EnvDTE assemblies not installed on this machine: compile check skipped' $true 'no TcXaeShell / Visual Studio PublicAssemblies found'
