@@ -25,9 +25,12 @@
 #    lists the levels seen per severity so the first real run can tell.
 #  - Description has no compiler code; FileName is the full path + ' (Impl)' / ' (Decl)' (4026) or the full path (4024);
 #    Project is the .plcproj path relative to the solution; Column is always 1; Line like the UIA scan.
-#  - The Error List window is only used when it already exists (looked up in DTE.Windows, review #332 S7): the first access
-#    to ToolWindows.ErrorList would create it (XAE 64-bit: an auto-hidden tab appears) and change the user's layout.
-#    Not created yet -> reason 'errorlist-not-created', the UIA scan runs (it shows the window itself).
+#  - Error List window not created yet (review #332 S7, Lance via Dev-G16: "allow creating a hidden tab, readable from
+#    the background"): looked up in DTE.Windows; when missing it is created through ToolWindows.ErrorList (no Activate,
+#    no SetFocus, never made visible) and read like any other, through the same checks (scope caption, isolation, summary).
+#    After the read (flags back first) the window is put back to hidden / auto-hidden and the readback decides:
+#    data.comRead.errorListCreated = $true says this read made the tab, errorListHidden = $false says it could not be hidden
+#    again (reported as is, 真機未測 2026-11-23). Creation failed -> reason 'errorlist-create-failed', the UIA scan runs.
 #  - Deadline (CODING_STANDARDS 1): the read has a cooperative budget (-MaxMs, checked between COM calls, compile and the
 #    pane work included); one COM call that blocks in the IDE (modal dialog) cannot be interrupted, as with
 #    Invoke-TcComRetry. Moving it to a background runspace was not done: an abandoned read keeps the user's Show* flags
@@ -335,7 +338,7 @@ function Get-TcErrorListComVerdict {
         Fail closed: anything that cannot be proven falls back to the UIA scan (the result carries the reason).
     .DESCRIPTION
         A COM read is rejected when
-          - it failed (reason com-read-failed:<why>; errorlist-not-created when the Error List window never existed)
+          - it failed (reason com-read-failed:<why>; errorlist-create-failed when the Error List window did not exist and could not be created)
           - the Error List scope is not provably Entire Solution (scope-not-entire / scope-unknown): the list is filtered
             and a filtered list answers 0 rows without an error
           - isolation (severity by one Show* flag at a time) does not add up: sum of the three reads != all-flags count
@@ -385,11 +388,14 @@ function Get-TcErrorListComVerdict {
     if ($null -ne $Com.PSObject.Properties['flagsRestored']) { $flagsOk = [bool]$Com.flagsRestored }
     $verdict = { param([bool]$Accept, [string]$Reason) [PSCustomObject]@{ accept = $Accept; reason = $Reason; notes = $notes.ToArray(); flagsRestored = $flagsOk } }
     if (-not [bool]$Com.ok) {
-        if ([string]$Com.reason -eq 'errorlist-not-created') { return (& $verdict $false 'errorlist-not-created') }
+        if ([string]$Com.reason -eq 'errorlist-create-failed') { return (& $verdict $false 'errorlist-create-failed') }
         $why = [string]$Com.reason
         if (-not [string]::IsNullOrWhiteSpace([string]$Com.error)) { $why += ": $([string]$Com.error)" }
         if (-not $flagsOk) { $why += '; the Error List Errors / Warnings / Messages buttons could not be set back to their earlier state' }
         return (& $verdict $false "com-read-failed:$why")
+    }
+    if ($null -ne $Com.PSObject.Properties['created'] -and [bool]$Com.created -and $null -ne $Com.PSObject.Properties['hiddenRestored'] -and -not [bool]$Com.hiddenRestored) {
+        $notes.Add('the Error List window was created by this read and could not be set back to hidden / auto-hidden (it may be visible)')
     }
     $scope = ConvertFrom-TcErrorListScopeCaption -Caption ([string]$Com.caption)
     if ($scope.kind -eq 'partial') { return (& $verdict $false "scope-not-entire: the Error List caption is '$([string]$Com.caption)' (scope '$($scope.scope)'), the list is filtered") }
@@ -512,7 +518,7 @@ function Read-TcErrorListCom {
     <#
     .SYNOPSIS
         Calls the C# reader on the connected DTE (through Invoke-TcComRetry: busy / dead RPC retried once, IDE_* classified).
-        Returns { ok; reason; error; caption; allCount; flagsRestored; flagsChanged; flagsBefore; ms; errors; warnings; messages }.
+        Returns { ok; reason; error; caption; allCount; flagsRestored; flagsChanged; flagsBefore; created; hiddenRestored; ms; errors; warnings; messages }.
         Never throws: an exception of Invoke-TcComRetry (IDE_BUSY, IDE_CRASHED, IDE_MODAL_DIALOG, CALL_DEADLINE_EXCEEDED)
         becomes ok = $false with the text in error, and flagsRestored of the last attempt is kept (review #332 S1).
         Mocked in unit tests.
@@ -524,7 +530,7 @@ function Read-TcErrorListCom {
     param([int]$MaxMs)
     $dte = $script:TcDte
     $settle = [int]$script:TcErrorListComSettleMs
-    $ctx = @{ orig = $null; last = $null }
+    $ctx = @{ orig = $null; last = $null; created = $false; hiddenOk = $true }
     $prevDeadline = $script:TcComCallDeadline
     $mine = [DateTime]::UtcNow.AddMilliseconds([Math]::Max(1000, $MaxMs * 2))
     if ($null -eq $prevDeadline -or $mine -lt [DateTime]$prevDeadline) { $script:TcComCallDeadline = $mine }
@@ -534,6 +540,9 @@ function Read-TcErrorListCom {
         $r = Invoke-TcComRetry -MaxRetries 2 -OperationName 'ErrorList.ErrorItems' -ScriptBlock {
             $res = [TcAutomation.ErrorListComReader]::Read($dte, $settle, $MaxMs, [bool[]]$ctx.orig)
             $ctx.last = $res
+            # a retry finds the window the first attempt created (hidden again): the creation is not lost
+            if ($res.Created) { $ctx.created = $true }
+            if (-not $res.HiddenRestored) { $ctx.hiddenOk = $false }
             if ($null -eq $ctx.orig -and $res.FlagsRead) { $ctx.orig = [bool[]]@($res.FlagsBefore) }
             $kind = Get-TcComRpcFailureKind -Exception ([PSCustomObject]@{ Message = [string]$res.Error; HResult = [int]$res.HResult; InnerException = $null })
             if ($res.Reason -eq 'com-error' -and ($kind.Busy -or $kind.DeadRpc)) {
@@ -557,6 +566,7 @@ function Read-TcErrorListCom {
         return [PSCustomObject]@{
             ok = $false; reason = 'com-error'; error = $msg; caption = ''; allCount = 0
             flagsRestored = $restored; flagsChanged = $changed; flagsBefore = @(if ($null -ne $ctx.orig) { $ctx.orig }); ms = 0
+            created = [bool]$ctx.created; hiddenRestored = [bool]$ctx.hiddenOk
             errors = @(); warnings = @(); messages = @()
         }
     }
@@ -569,6 +579,8 @@ function Read-TcErrorListCom {
         flagsRestored = [bool]$r.FlagsRestored
         flagsChanged  = [bool]$r.FlagsChanged
         flagsBefore   = @($r.FlagsBefore)
+        created       = [bool]($ctx.created -or $r.Created)
+        hiddenRestored = [bool]($ctx.hiddenOk -and $r.HiddenRestored)
         ms            = [Math]::Round([double]$r.Ms, 1)
         errors        = & $rowsOf $r.Errors
         warnings      = & $rowsOf $r.Warnings
@@ -582,7 +594,8 @@ function Get-TcErrorListViaCom {
         The COM read of the Error List as the data of a Get-TcBuildErrors result.
         Returns { accepted; reason; data; elapsedMs; flagsRestored }: accepted = $true -> data is complete and may be returned
         as is; $false -> reason says why the UIA scan must read instead (data is $null; flagsRestored $false when the user's
-        Error List buttons could not be put back).
+        Error List buttons could not be put back). errorListCreated = this read created the Error List tab; errorListHidden =
+        $false when that new tab could not be hidden / auto-hidden again (also on rejections).
     .PARAMETER ExpectErrors
         The caller knows the build / check failed (see Get-TcErrorListComVerdict).
     .PARAMETER BuildPaneText
@@ -604,7 +617,9 @@ function Get-TcErrorListViaCom {
     )
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $flagsRestored = $true
-    $reject = { param([string]$Why) [PSCustomObject]@{ accepted = $false; reason = $Why; data = $null; elapsedMs = [int]$sw.ElapsedMilliseconds; flagsRestored = $flagsRestored } }
+    $errorListCreated = $false
+    $errorListHidden = $true
+    $reject = { param([string]$Why) [PSCustomObject]@{ accepted = $false; reason = $Why; data = $null; elapsedMs = [int]$sw.ElapsedMilliseconds; flagsRestored = $flagsRestored; errorListCreated = $errorListCreated; errorListHidden = $errorListHidden } }
     if ($null -eq $script:TcDte) { return (& $reject 'com-unavailable: no DTE connection') }
     if ($MaxMs -le 0) { $MaxMs = [int]$script:TcErrorListComDefaultMaxMs }
     try {
@@ -632,6 +647,8 @@ function Get-TcErrorListViaCom {
         $com = Read-TcErrorListCom -MaxMs ([Math]::Max(500, $MaxMs - [int]$sw.ElapsedMilliseconds))
         if ($null -eq $com) { return (& $reject 'com-read-failed:no result') }
         if ($null -ne $com.PSObject.Properties['flagsRestored']) { $flagsRestored = [bool]$com.flagsRestored }
+        if ($null -ne $com.PSObject.Properties['created']) { $errorListCreated = [bool]$com.created }
+        if ($null -ne $com.PSObject.Properties['hiddenRestored']) { $errorListHidden = [bool]$com.hiddenRestored }
 
         $items = @{ Error = [System.Collections.Generic.List[object]]::new(); Warning = [System.Collections.Generic.List[object]]::new(); Message = [System.Collections.Generic.List[object]]::new() }
         $isolatedTotal = 0
@@ -697,12 +714,14 @@ function Get-TcErrorListViaCom {
                 readMs            = $com.ms
                 rows              = ($items.Error.Count + $items.Warning.Count + $items.Message.Count)
                 flagsRestored     = [bool]$com.flagsRestored
+                errorListCreated  = $errorListCreated
+                errorListHidden   = $errorListHidden
                 errorsWithoutCode = $unresolvedCodes
                 paneCrossCheck    = [bool]$freshPane
                 buildSummary      = $(if ($null -ne $paneSummary) { [string]($paneSummary.lines -join ' | ') } else { $null })
                 notes             = @($verdict.notes)
             })
-        return [PSCustomObject]@{ accepted = $true; reason = $null; data = $data; elapsedMs = [int]$sw.ElapsedMilliseconds; flagsRestored = $flagsRestored }
+        return [PSCustomObject]@{ accepted = $true; reason = $null; data = $data; elapsedMs = [int]$sw.ElapsedMilliseconds; flagsRestored = $flagsRestored; errorListCreated = $errorListCreated; errorListHidden = $errorListHidden }
     }
     catch {
         # IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG from Invoke-TcComRetry: the COM source is not usable now; the UIA

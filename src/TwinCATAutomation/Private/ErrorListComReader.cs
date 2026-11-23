@@ -47,12 +47,46 @@ namespace TcAutomation
 
             public DteSource(object dte) { dteObject = dte; }
 
-            // Finds the Error List window among the IDE's windows WITHOUT creating it (review #332 S7: the first access to
-            // ToolWindows.ErrorList creates the window when it never existed and changes the user's layout).
+            // Finds the Error List window among the IDE's windows WITHOUT creating it. Creating is Create() (review #332 S7).
             public bool Open(out string caption)
             {
                 caption = null;
                 DTE2 d = (DTE2)dteObject;
+                if (!FindWindow(d)) return false;
+                caption = win.Caption;
+                el = d.ToolWindows.ErrorList;     // the window exists: this creates nothing
+                return el != null;
+            }
+
+            // S7 (Lance via Dev-G16: hidden tab allowed, readable from the background): the first access to
+            // ToolWindows.ErrorList creates the window. Only that property is touched: no Activate, no SetFocus, no
+            // Window.Visible = true, no Show*; the window is found in DTE.Windows afterwards (caption, hiding).
+            // The calls below were NOT run on a real IDE in this round (not measured); what the new window looks like
+            // (auto-hidden tab or docked) and whether Visible / AutoHides can be set back is decided by the readback.
+            public bool Create(out string caption)
+            {
+                caption = null;
+                DTE2 d = (DTE2)dteObject;
+                el = d.ToolWindows.ErrorList;
+                if (el == null || !FindWindow(d)) return false;
+                caption = win.Caption;
+                return true;
+            }
+
+            // Back to hidden / auto-hidden, judged by the readback of Window.Visible / Window.AutoHides (no Activate).
+            public bool RestoreHidden()
+            {
+                DTE2 d = (DTE2)dteObject;
+                if (win == null && !FindWindow(d)) return true;   // no window exists: nothing is shown
+                if (!win.Visible || win.AutoHides) return true;
+                try { win.Visible = false; } catch (COMException ex) { if (IsRpcFailure(ex.ErrorCode)) throw; }
+                if (!win.Visible) return true;
+                try { win.AutoHides = true; } catch (COMException ex) { if (IsRpcFailure(ex.ErrorCode)) throw; }
+                return !win.Visible || win.AutoHides;
+            }
+
+            bool FindWindow(DTE2 d)
+            {
                 EnvDTE.Windows ws = null;
                 try
                 {
@@ -73,10 +107,7 @@ namespace TcAutomation
                     }
                 }
                 finally { Release(ws); }
-                if (win == null) return false;
-                caption = win.Caption;
-                el = d.ToolWindows.ErrorList;     // the window exists: this creates nothing
-                return el != null;
+                return win != null;
             }
 
             public bool GetFlag(int index)

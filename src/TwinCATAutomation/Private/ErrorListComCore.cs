@@ -31,10 +31,12 @@ namespace TcAutomation
     public sealed class ErrorListComResult
     {
         public bool Ok;
-        public string Reason;        // short machine reason when !Ok ('errorlist-not-created', 'flags-not-set', 'flags-not-effective', 'timeout', 'com-error', ...)
+        public string Reason;        // short machine reason when !Ok ('errorlist-create-failed', 'flags-not-set', 'flags-not-effective', 'timeout', 'com-error', ...)
         public string Error;         // exception text when Reason == 'com-error'
         public int HResult;          // COMException HResult (0 when none)
         public string Caption;       // Window.Caption of the Error List window
+        public bool Created;         // the Error List window did not exist and this read created it (Lance S7: hidden tab allowed)
+        public bool HiddenRestored;  // true when nothing was created, or the created window is hidden / auto-hidden again (read back)
         public bool[] FlagsBefore = new bool[3];   // ShowErrors / ShowWarnings / ShowMessages before the first change
         public bool FlagsRead;       // FlagsBefore holds the user's flags (read here, or passed in by a retry)
         public bool FlagsChanged;    // the first flag change was attempted: the finally block had to restore
@@ -49,8 +51,14 @@ namespace TcAutomation
     // Index 0 = Errors, 1 = Warnings, 2 = Messages. Every method may throw COMException.
     public interface IErrorListSource : IDisposable
     {
-        // The Error List window if it already exists (it is never created: review #332 S7); false when it does not
+        // The Error List window if it already exists; false when it does not
         bool Open(out string caption);
+        // Creates the Error List window (ToolWindows.ErrorList) WITHOUT Activate / SetFocus / making it visible
+        // (S7, Lance: "允許建隱藏分頁,換背景也讀得到"); false when it cannot be created or found afterwards
+        bool Create(out string caption);
+        // Puts a window that Create made back to hidden / auto-hidden. true only when the readback shows it hidden or
+        // auto-hidden (or no window exists); false when it could not be done (reported as is, never assumed)
+        bool RestoreHidden();
         bool GetFlag(int index);
         void SetFlag(int index, bool value);
         // ErrorItems.Count; a fresh read of the list, RowAt(1..count) belong to the last Count()
@@ -145,12 +153,21 @@ namespace TcAutomation
         {
             var res = new ErrorListComResult();
             res.FlagsRestored = true;   // nothing is changed until the first flag change
+            res.HiddenRestored = true;  // nothing is created until Create
+            bool createAttempted = false;
             var sw = Stopwatch.StartNew();
             var budget = new Budget(maxMs);
             try
             {
                 string caption;
-                if (!s.Open(out caption)) { res.Reason = "errorlist-not-created"; return res; }
+                if (!s.Open(out caption))
+                {
+                    // S7 (Lance: hidden tab allowed): create it, never Activate / SetFocus; hidden again in finally
+                    createAttempted = true;
+                    res.HiddenRestored = false;   // until the readback says otherwise
+                    if (!s.Create(out caption)) { res.Reason = "errorlist-create-failed"; return res; }
+                    res.Created = true;
+                }
                 res.Caption = caption;
                 if (originalFlags != null && originalFlags.Length == 3)
                 {
@@ -196,6 +213,18 @@ namespace TcAutomation
                         catch (Exception) { System.Threading.Thread.Sleep(200); }
                     }
                     res.FlagsRestored = ok;
+                }
+                if (createAttempted)
+                {
+                    // after the flags are back: hide what this read created; the readback decides, never the call
+                    bool hidden = false;
+                    for (int attempt = 0; attempt < 3 && !hidden; attempt++)
+                    {
+                        try { hidden = s.RestoreHidden(); }
+                        catch (Exception) { }
+                        if (!hidden) System.Threading.Thread.Sleep(200);
+                    }
+                    res.HiddenRestored = hidden;
                 }
                 res.Ms = sw.Elapsed.TotalMilliseconds;
             }

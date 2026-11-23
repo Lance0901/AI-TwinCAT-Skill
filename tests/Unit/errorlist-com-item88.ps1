@@ -138,8 +138,8 @@ try {
     Check 'E2 reader failed -> com-read-failed:timeout' (-not $v.accept -and $v.reason -eq 'com-read-failed:timeout') (J $v)
     $v = & $verdict (& $com -ok $false -reason 'com-error' -err 'boom')
     Check 'E2 reader exception text kept' (-not $v.accept -and $v.reason -eq 'com-read-failed:com-error: boom') (J $v)
-    $v = & $verdict (& $com -ok $false -reason 'errorlist-not-created')
-    Check 'E2 Error List window never created (S7) -> reason is exactly errorlist-not-created' (-not $v.accept -and $v.reason -eq 'errorlist-not-created') (J $v)
+    $v = & $verdict (& $com -ok $false -reason 'errorlist-create-failed')
+    Check 'E2 Error List window did not exist and could not be created (S7) -> reason is exactly errorlist-create-failed' (-not $v.accept -and $v.reason -eq 'errorlist-create-failed') (J $v)
     $v = & $verdict (& $com -ok $false -reason 'com-error' -err 'busy' -restored $false)
     Check 'E2 failed read that could not restore the buttons: carried in the reason and flagsRestored $false (S1)' (-not $v.accept -and $v.reason -match 'could not be set back' -and $v.flagsRestored -eq $false) (J $v)
     $v = & $verdict (& $com -caption "$zhTitle - $zhProject (X)") 0 0 3
@@ -279,9 +279,15 @@ try {
     Set-Com @{ ok = $false; reason = 'com-error'; error = 'x'; flagsRestored = $false }
     $r = ViaCom @{}
     Check 'F14 failed read with unrestorable buttons: rejection carries flagsRestored $false' (-not $r.accepted -and $r.flagsRestored -eq $false) (J $r)
-    Set-Com @{ ok = $false; reason = 'errorlist-not-created' }
+    Set-Com @{ ok = $false; reason = 'errorlist-create-failed' }
     $r = ViaCom @{}
-    Check 'F15 Error List window not created yet: rejected errorlist-not-created (S7)' (-not $r.accepted -and $r.reason -eq 'errorlist-not-created') (J $r)
+    Check 'F15 Error List window could not be created (S7): rejected errorlist-create-failed, nothing created' (-not $r.accepted -and $r.reason -eq 'errorlist-create-failed' -and -not $r.errorListCreated) (J $r)
+    Set-Com @{ created = $true; hiddenRestored = $true }
+    $r = ViaCom @{}
+    Check 'F16 Error List tab created by this read and hidden again: accepted, comRead.errorListCreated = true, errorListHidden = true' ($r.accepted -and $r.errorListCreated -and $r.errorListHidden -and $r.data.comRead.errorListCreated -and $r.data.comRead.errorListHidden) (J $r.data.comRead)
+    Set-Com @{ created = $true; hiddenRestored = $false }
+    $r = ViaCom @{}
+    Check 'F17 created but could not be hidden again: accepted, errorListHidden = false reported (not faked)' ($r.accepted -and $r.errorListCreated -and -not $r.errorListHidden -and -not $r.data.comRead.errorListHidden) (J $r.data.comRead)
 
     # --- G: Get-TcBuildErrors ---
     & $mod {
@@ -369,9 +375,12 @@ try {
     $csRead = [IO.File]::ReadAllText((Join-Path $priv 'ErrorListComReader.cs'))
     $strip = { param($t) ($t -split "`n" | Where-Object { $_ -notmatch '^\s*//' }) -join "`n" }
     $codeAll = (& $strip $csCore) + "`n" + (& $strip $csRead)
-    Check 'J1 helper reads and sets the three Show* flags only: no ExecuteCommand / Activate / Visible / AutoHides / Close / WindowState' ($codeAll -notmatch 'ExecuteCommand|\.Activate\(|\.Visible\s*=|AutoHides|\.Close\(|WindowState|SetFocus|SendKeys') ''
+    Check 'J1 helper never shows / focuses the window (S7): no ExecuteCommand / Activate / SetFocus / Visible = true / AutoHides = false / Close / WindowState; the only window writes are Visible = false and AutoHides = true (hide again)' ($codeAll -notmatch 'ExecuteCommand|\.Activate\(|\.Visible\s*=\s*true|AutoHides\s*=\s*false|\.Close\(|WindowState|SetFocus|SendKeys' -and ([regex]::Matches($codeAll, '\.Visible\s*=')).Count -eq 1 -and ([regex]::Matches($codeAll, '\.AutoHides\s*=')).Count -eq 1) ''
     Check 'J2 restore in finally, rows 1..Count inclusive' ((& $strip $csCore) -match 'finally' -and (& $strip $csCore) -match 'for \(int i = 1; i <= count; i\+\+\)') ''
-    Check 'J3 the window is looked up in DTE.Windows and ToolWindows.ErrorList is read only after it was found (S7)' ((& $strip $csRead).IndexOf('ws.Item(i)') -ge 0 -and (& $strip $csRead).IndexOf('ws.Item(i)') -lt (& $strip $csRead).IndexOf('ToolWindows.ErrorList') -and $csRead -match 'if \(win == null\) return false') ''
+    $rd = & $strip $csRead
+    $openAt = $rd.IndexOf('public bool Open('); $createAt = $rd.IndexOf('public bool Create(')
+    $openBody = $rd.Substring($openAt, $createAt - $openAt)
+    Check 'J3 Open() looks the window up in DTE.Windows (FindWindow, ws.Item(i)) before it reads ToolWindows.ErrorList; only Create() reads ToolWindows.ErrorList without a window (S7)' ($rd.IndexOf('ws.Item(i)') -ge 0 -and $openBody.IndexOf('FindWindow') -ge 0 -and $openBody.IndexOf('FindWindow') -lt $openBody.IndexOf('ToolWindows.ErrorList') -and ([regex]::Matches($rd, 'ToolWindows\.ErrorList')).Count -eq 2) ''
     Check 'J4 every RCW the adapter obtains is released (N2): ErrorItem, ErrorItems, ErrorList, Window, Windows' (([regex]::Matches((& $strip $csRead), 'Release\(')).Count -ge 7 -and (& $strip $csRead) -match 'Release\(it\)' -and (& $strip $csRead) -match 'Release\(ws\)') ''
     $paths = & $mod { Get-TcErrorListComAssemblyPaths -IdeProcessId 0 }
     if ($null -eq $paths) {

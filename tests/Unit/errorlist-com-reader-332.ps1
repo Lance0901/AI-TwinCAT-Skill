@@ -1,7 +1,8 @@
 # Unit: the algorithm of the COM Error List read (ErrorListComCore.cs) and its PowerShell wrapper, driven with a FAKE source
 # (no IDE, no EnvDTE assembly needed: only ErrorListComCore.cs is compiled), review #332 S1 / S3 / S7 / S9 / N5.
 #   K  normal read: severities by flag, flags put back; a Count that lags one read behind the flag change does not swap rows (S3);
-#      Error List window not created -> reject without touching a flag (S7); flags that never reach the list -> flags-not-effective
+#      Error List window not created -> created hidden, read, hidden again (S7, Lance: hidden tab allowed); creation fails -> errorlist-create-failed;
+#      hiding it again fails -> reported (hiddenRestored false), never faked; flags that never reach the list -> flags-not-effective
 #   L  Read-TcErrorListCom: busy once, buttons restored -> retried with the FIRST attempt's flags; busy and buttons NOT restored -> no retry,
 #      flagsRestored $false is returned (S1)
 #   M  Initialize-TcErrorListComTypes: a failure is not cached for the whole process (N5)
@@ -34,6 +35,10 @@ namespace TcAutomation
         public List<ErrorListComRow> Warns = new List<ErrorListComRow>();
         public List<ErrorListComRow> Msgs = new List<ErrorListComRow>();
         public bool Exists = true;
+        public bool CreateFails;        // Create() cannot make the window
+        public bool HideFails;          // RestoreHidden() cannot put it back
+        public int CreateCalls;
+        public int HideCalls;
         public int Lag;                 // Count() answers with the previous list this many times after a flag change
         public bool NeverZero;          // flags have no effect on the list
         public int BusyOnCount;         // the Count() call with this number (per Read call 1) throws RPC_E_CALL_REJECTED once
@@ -63,6 +68,13 @@ namespace TcAutomation
         }
         static COMException Busy() { return new COMException("busy", unchecked((int)0x80010001)); }
         public bool Open(out string caption) { caption = "Error List"; if (!st.Exists) return false; shown = Current(); return true; }
+        public bool Create(out string caption)
+        {
+            caption = "Error List"; st.CreateCalls++;
+            if (st.CreateFails) return false;
+            st.Exists = true; shown = Current(); return true;
+        }
+        public bool RestoreHidden() { st.HideCalls++; return !st.HideFails; }
         public bool GetFlag(int i) { return st.Flags[i]; }
         public void SetFlag(int i, bool v)
         {
@@ -130,7 +142,28 @@ try {
     Reset-Fake
     $st.Exists = $false
     $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, $null)
-    Check 'K3 Error List window does not exist (S7): errorlist-not-created, no flag was read or set, nothing to restore' (-not $r.Ok -and $r.Reason -eq 'errorlist-not-created' -and $st.SetCalls -eq 0 -and -not $r.FlagsChanged -and $r.FlagsRestored) (J @{ reason = $r.Reason; sets = $st.SetCalls })
+    Check 'K3 Error List window does not exist (S7): created, read normally (same rows, same isolation), flags back, created = true, hidden again' ($r.Ok -and $r.Created -and $r.HiddenRestored -and $st.CreateCalls -eq 1 -and $st.HideCalls -eq 1 -and (Descs $r.Errors) -eq 'e1,e2' -and (Descs $r.Warnings) -eq 'w1' -and (Descs $r.Messages) -eq 'm1' -and $r.AllCount -eq 4 -and $r.FlagsRestored -and $st.Flags[0] -and -not $st.Flags[1] -and $st.Flags[2]) (J @{ ok = $r.Ok; reason = $r.Reason; created = $r.Created; hidden = $r.HiddenRestored })
+    Reset-Fake
+    $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, $null)
+    Check 'K3 window already there: not created, no hide attempt, hiddenRestored stays true' ($r.Ok -and -not $r.Created -and $r.HiddenRestored -and $st.CreateCalls -eq 0 -and $st.HideCalls -eq 0) (J @{ created = $r.Created; hide = $st.HideCalls })
+
+    Reset-Fake
+    $st.Exists = $false
+    $st.CreateFails = $true
+    $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, $null)
+    Check 'K3b creation fails: errorlist-create-failed, no flag read or set, created = false (caller falls back to UIA)' (-not $r.Ok -and $r.Reason -eq 'errorlist-create-failed' -and -not $r.Created -and $st.SetCalls -eq 0 -and -not $r.FlagsChanged -and $r.FlagsRestored) (J @{ reason = $r.Reason; sets = $st.SetCalls; created = $r.Created })
+
+    Reset-Fake
+    $st.Exists = $false
+    $st.HideFails = $true
+    $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, $null)
+    Check 'K3c created, read ok, hiding it again fails: data is still read, created = true, hiddenRestored = false (reported, not faked), 3 tries, flags still back' ($r.Ok -and $r.Created -and -not $r.HiddenRestored -and $st.HideCalls -eq 3 -and $r.FlagsRestored -and (Descs $r.Errors) -eq 'e1,e2') (J @{ ok = $r.Ok; created = $r.Created; hidden = $r.HiddenRestored; hideCalls = $st.HideCalls })
+
+    Reset-Fake
+    $st.Exists = $false
+    $st.NeverZero = $true
+    $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 300, $null)
+    Check 'K3d created window gets the same defences: flags never reach the list -> flags-not-effective, flags back, hidden again' (-not $r.Ok -and $r.Reason -eq 'flags-not-effective' -and $r.Created -and $r.HiddenRestored -and $r.FlagsRestored -and $st.HideCalls -eq 1) (J @{ reason = $r.Reason; created = $r.Created; hidden = $r.HiddenRestored })
 
     Reset-Fake
     $st.NeverZero = $true
@@ -159,8 +192,23 @@ try {
 
     Reset-Fake
     $st.Exists = $false
+    $st.CreateFails = $true
     $c = & $mod { Read-TcErrorListCom -MaxMs 5000 }
-    Check 'L3 Error List not created: ok = $false, reason errorlist-not-created, a single run, no retry' (-not $c.ok -and $c.reason -eq 'errorlist-not-created' -and $st.Runs -eq 1) (J $c)
+    Check 'L3 Error List not created and cannot be: ok = $false, reason errorlist-create-failed, a single run, no retry, created = false' (-not $c.ok -and $c.reason -eq 'errorlist-create-failed' -and $st.Runs -eq 1 -and -not $c.created) (J $c)
+
+    Reset-Fake
+    $st.Exists = $false
+    $st.BusyOnCount = 3
+    $c = & $mod { Read-TcErrorListCom -MaxMs 5000 }
+    Check 'L4 created by attempt 1, busy, retried: attempt 2 finds the (hidden again) window, the result still says created = true, hiddenRestored = true' ($c.ok -and $st.Runs -eq 2 -and $c.created -and $c.hiddenRestored -and $st.CreateCalls -eq 1) (J @{ runs = $st.Runs; created = $c.created; hidden = $c.hiddenRestored; ok = $c.ok; reason = $c.reason })
+
+    Reset-Fake
+    $st.Exists = $false
+    $st.HideFails = $true
+    $c = & $mod { Read-TcErrorListCom -MaxMs 5000 }
+    Check 'L5 created, hiding fails: Read-TcErrorListCom carries created = true, hiddenRestored = false' ($c.ok -and $c.created -and -not $c.hiddenRestored) (J @{ created = $c.created; hidden = $c.hiddenRestored })
+    $v = & $mod { param($x) Get-TcErrorListComVerdict -Com $x -ErrorRows 2 -IsolatedTotal 4 } $c
+    Check 'L5 verdict accepts the data (the read is sound) and names the visible window in notes' ($v.accept -and (@($v.notes) -join ' ') -match 'could not be set back to hidden') (J $v)
 
     # --- M: init failure is not forever (N5) ---
     $old = [DateTime]::UtcNow.AddSeconds(-120)

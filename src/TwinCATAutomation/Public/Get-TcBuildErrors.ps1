@@ -23,7 +23,8 @@
           - -RequireBuildSummary (callers that decide success from the list): no end summary line in the pane of this
             build ('Build complete -- N errors' / MSBuild 'Build: .. failed'), or fewer error rows than it says -> UIA.
             COM cannot see the Error List search box or column filters; the summary is what rules a filtered list out
-          - the Error List window does not exist yet ('errorlist-not-created'): COM does not create it, UIA shows it
+          - the Error List window does not exist and could not be created ('errorlist-create-failed'): UIA reads
+            (a missing window is created hidden through ToolWindows.ErrorList, never activated: data.comRead.errorListCreated)
         The compiler code (Cxxxx / SAxxxx) is not in the COM description: it is taken from the build
         pane line with the same file and text, else $null. file / project / line have the UIA form
         (file = base name + ' (Impl)' / ' (Decl)' as the grid shows it, project = project name, line =
@@ -83,12 +84,15 @@
                          'scope-not-entire: ...', 'scope-unknown: ...', 'expected-errors-none-read: ...',
                          'build-summary-missing: ...', 'fewer-errors-than-build-summary: ...',
                          'fewer-errors-than-build-pane: ...', 'build-pane-error-not-in-list: ...',
-                         'severity-isolation-mismatch: ...', 'error-level-mismatch: ...', 'errorlist-not-created',
+                         'severity-isolation-mismatch: ...', 'error-level-mismatch: ...', 'errorlist-create-failed',
                          'com-read-failed:<why>', 'com-helper-unavailable: ...', 'com-budget-exceeded: ...', 'com-error: ...'
         data.comFlagsRestored  $false (only then present) on a UIA result: the COM read changed the Error List Errors /
                          Warnings / Messages buttons and could not put them back
+        data.comErrorListCreated  $true (only then present) on a UIA result: the COM attempt created the Error List tab
+        data.comErrorListHidden   $false (only then present) on a UIA result: that new tab could not be hidden again
         data.comRead     COM results only: severityBy ('ShowFlags'), levelCheck, levelCounts, dteMajor, readMs, rows,
-                         flagsRestored, errorsWithoutCode (error rows whose code the build pane could not give),
+                         flagsRestored, errorListCreated (this read created the hidden Error List tab), errorListHidden ($false =
+                         the new tab could not be hidden / auto-hidden again, reported as is), errorsWithoutCode (error rows whose code the build pane could not give),
                          paneCrossCheck, buildSummary, notes
         data.severityUnknown  $true when the rows could not be assigned a severity (the
                          filter buttons were not toggleable and more than one is on);
@@ -156,10 +160,14 @@
     # Show* flags, so this guard comes BEFORE it (review #332 S2).
     $comFallbackReason = $null
     $comFlagsNotRestored = $false
+    $comCreated = $false
+    $comNotHidden = $false
     $addFallback = {
         param($Data)
         if ($null -ne $comFallbackReason) { $Data | Add-Member -NotePropertyName 'fallbackReason' -NotePropertyValue $comFallbackReason -Force }
         if ($comFlagsNotRestored) { $Data | Add-Member -NotePropertyName 'comFlagsRestored' -NotePropertyValue $false -Force }
+        if ($comCreated) { $Data | Add-Member -NotePropertyName 'comErrorListCreated' -NotePropertyValue $true -Force }
+        if ($comNotHidden) { $Data | Add-Member -NotePropertyName 'comErrorListHidden' -NotePropertyValue $false -Force }
     }
     $cleanupWarning = $null
     if ($script:TcErrorListScanBusy) {
@@ -199,6 +207,8 @@
         if ($com.accepted) { return (New-TcResult -Success $true -Data $com.data) }
         $comFallbackReason = [string]$com.reason
         if ($null -ne $com.PSObject.Properties['flagsRestored'] -and -not [bool]$com.flagsRestored) { $comFlagsNotRestored = $true }
+        if ($null -ne $com.PSObject.Properties['errorListCreated'] -and [bool]$com.errorListCreated) { $comCreated = $true }
+        if ($null -ne $com.PSObject.Properties['errorListHidden'] -and -not [bool]$com.errorListHidden) { $comNotHidden = $true }
         $uiaTimeoutSec = [Math]::Max(1, $TimeoutSec - [int][Math]::Ceiling($comWatch.Elapsed.TotalSeconds))
         Write-Verbose "Get-TcBuildErrors: COM read not used ($comFallbackReason); UI Automation scan."
     }
