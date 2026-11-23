@@ -202,7 +202,8 @@ function Clear-TcProject {
         # the solution was opened, 0 after a build (measured 2026-10-25, 4024 32-bit XAE Shell;
         # 4026 VS2022 RobustDemo: 0). That is LIBRARY_UNRESOLVED (an error unless
         # -AllowUnresolvedLibrary), never a clean that worked; anything else is CLEAN_FAILED.
-        $errList = Get-TcBuildErrors -TimeoutSec $script:TcBuildErrorListTimeoutSec
+        # item 88: COM first; LastBuildInfo > 0 here, so a COM list without an error row is not accepted (UIA reads)
+        $errList = Get-TcBuildErrors -TimeoutSec $script:TcBuildErrorListTimeoutSec -ExpectErrors
         # #138: only the ERROR rows matter here; warnings read short do not make the list unusable
         $elState = Get-TcErrorListReadState -Result $errList
         $items = @()

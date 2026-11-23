@@ -45,6 +45,8 @@ function Get-TcErrorListSummary {
           loadErrorItems     errorItems that XAE wrote while loading a project file (Test-TcProjectLoadErrorItem,
                              #275): no compiler code, File = a bare object / project file name. Still in errorItems /
                              codeErrors (category unchanged); the callers decide what they mean
+          errorListSource    Get-TcBuildErrors data.source ('ErrorList(COM)' / 'ErrorList(UIA)'), $null when not read
+          errorListFallbackReason  Get-TcBuildErrors data.fallbackReason: why COM was not used (only after a UIA read), else $null
           staticAnalysisItems errorItems with a TE1200 Static Analysis code SA<nnnn> (Test-TcStaticAnalysisItem, #275)
         errorListError = ERRORLIST_INCOMPLETE only when the ERROR rows are not proven complete
         (Get-TcErrorListReadState: errors / total shortfall, Errors total unreadable, or a filtered
@@ -57,6 +59,11 @@ function Get-TcErrorListSummary {
         Move runtime / system log rows to runtimeMessages (#66). Opt-in: only Build-TcProject and
         Test-TcPlcProject use it. Save-TcArchive compares the error rows before / after and must see
         every new row, so it (and New-TcBootProject) keep every row in errorItems (review #150 F1).
+    .PARAMETER ExpectErrors
+        The build / check failed (LastBuildInfo > 0, CheckAllObjects False): passed to Get-TcBuildErrors, a COM list
+        without an error row is then not accepted (UIA reads instead).
+    .PARAMETER BuildPaneText
+        Build pane text of the build just run (Build-TcProject), passed to Get-TcBuildErrors for the COM cross-check and codes.
     .PARAMETER FallbackErrorCount
         errorCount when the Error List cannot be read (Build-TcProject: LastBuildInfo).
     .PARAMETER FallbackWarningCount
@@ -67,7 +74,9 @@ function Get-TcErrorListSummary {
         [Parameter()][int]$TimeoutSec = 0,
         [Parameter()][int]$FallbackErrorCount = 0,
         [Parameter()][int]$FallbackWarningCount = 0,
-        [Parameter()][switch]$SplitRuntimeLog
+        [Parameter()][switch]$SplitRuntimeLog,
+        [Parameter()][switch]$ExpectErrors,
+        [Parameter()][AllowNull()][string]$BuildPaneText = $null
     )
     $errorCount = $FallbackErrorCount
     $warningCount = $FallbackWarningCount
@@ -78,7 +87,12 @@ function Get-TcErrorListSummary {
     $severityUnknown = $false
     $unclassified = @()
     $truncated = $false
-    $el = if ($TimeoutSec -gt 0) { Get-TcBuildErrors -IncludeWarnings -TimeoutSec $TimeoutSec } else { Get-TcBuildErrors -IncludeWarnings }
+    # extra parameters only when set: the COM read (item 88) cross-checks with them (Get-TcBuildErrors)
+    $elArgs = @{ IncludeWarnings = $true }
+    if ($TimeoutSec -gt 0) { $elArgs['TimeoutSec'] = $TimeoutSec }
+    if ($ExpectErrors) { $elArgs['ExpectErrors'] = $true }
+    if (-not [string]::IsNullOrWhiteSpace($BuildPaneText)) { $elArgs['BuildPaneText'] = $BuildPaneText }
+    $el = Get-TcBuildErrors @elArgs
     $rs = Get-TcErrorListReadState -Result $el
     $errorListNote = $null
     if ($rs.usable) {
@@ -161,6 +175,12 @@ function Get-TcErrorListSummary {
 
     $scanWarning = $null
     if ($null -ne $el.data -and $null -ne $el.data.PSObject.Properties['scanCleanupWarning']) { $scanWarning = [string]$el.data.scanCleanupWarning }
+    $elSource = $null
+    $elFallback = $null
+    if ($null -ne $el.data) {
+        if ($null -ne $el.data.PSObject.Properties['source']) { $elSource = [string]$el.data.source }
+        if ($null -ne $el.data.PSObject.Properties['fallbackReason']) { $elFallback = [string]$el.data.fallbackReason }
+    }
 
     [PSCustomObject]@{
         errorItems         = $errorItems
@@ -188,5 +208,7 @@ function Get-TcErrorListSummary {
         ambiguousRows      = @($ambiguousRows)
         loadErrorItems     = $loadErrorItems
         staticAnalysisItems = $staticAnalysisItems
+        errorListSource    = $elSource
+        errorListFallbackReason = $elFallback
     }
 }

@@ -1,13 +1,31 @@
 ﻿function Get-TcBuildErrors {
     <#
     .SYNOPSIS
-        Reads the compiler messages shown in the IDE "Error List" window (errors, and
-        optionally warnings / messages) via UI Automation.
+        Reads the compiler messages of the IDE "Error List" (errors, and optionally warnings /
+        messages): through COM (DTE2 ErrorList.ErrorItems) first, UI Automation as the fallback.
     .DESCRIPTION
-        The TwinCAT PLC compiler does not report through DTE (ErrorList.ErrorItems and
-        OutputWindow stay empty), so the only source is the Error List tool window of
-        the XAE. The window is made visible with View.ErrorList, then a UI Automation
-        scan (separate STA runspace, hard -TimeoutSec) reads
+        Source 1, COM (data.source 'ErrorList(COM)'; item 88, re #320 / #329 / #300): the Error List
+        of the connected IDE is read with an early-bound C# helper (ErrorListComReader.cs; PowerShell
+        late binding reads a fake 0, 實測 2026-11-23). It needs no visible window and no foreground and
+        takes about 2 ms per row (529 rows 0.96 s; the UIA scan timed out on the same list, #329). The
+        Errors / Warnings / Messages buttons are set on for the read (ShowErrors / ShowWarnings /
+        ShowMessages) and put back afterwards. The result is accepted only when it is provably the whole
+        list (fail closed: a filtered Error List answers 0 rows without an error):
+          - the Error List window caption is the bare title (Entire Solution); 'Error List - Current
+            Project (X)' / '- Current Document' / '- Open Documents' or an unknown caption -> UIA
+          - severity: 4024 (TcXaeShell 15.0) from ErrorLevel (error 4 / warning 2 / message 1, 實測
+            2026-11-23); 4026 (VS2022 / 64-bit XAE, ErrorLevel is 2 for every row) by reading one Show*
+            flag at a time, the three reads must add up to the all-flags count
+          - -ExpectErrors (the build / check failed) and no error row read -> UIA
+          - -BuildPaneText (the pane of this build): more error lines there than error rows -> UIA
+        The compiler code (Cxxxx / SAxxxx) is not in the COM description: it is taken from the build
+        pane line with the same file and text, else $null. file / project / line have the UIA form
+        (file = base name + ' (Impl)' / ' (Decl)' as the grid shows it, project = project name, line =
+        the Error List line, column = $null; data.errors[].filePath = the full path).
+        Source 2, UI Automation (data.source 'ErrorList(UIA)'; data.fallbackReason says why COM was not
+        used). The TwinCAT PLC compiler does not report through DTE when read with late binding, so the
+        Error List tool window of the XAE is scanned: the window is made visible with View.ErrorList,
+        then a UI Automation scan (separate STA runspace, hard -TimeoutSec) reads
           - the summary buttons ("9 Errors", "8 Warnings", "0 of 10 Messages") -> counts
           - every row of the (virtualised) grid, scrolling page by page, de-duplicated
             on description+project+file+line.
@@ -30,15 +48,32 @@
     .PARAMETER IncludeMessages
         Also read message rows (data.messages).
     .PARAMETER TimeoutSec
-        Hard limit for the UI Automation scan, including the one-time preparation of its helper
-        types (the first call in a process; the scan gets what is left, at least 1 s). Default 30.
+        Hard limit for the whole call: the COM read gets at most a quarter of it (8 s at most), the UI
+        Automation scan what is left (at least 1 s), including the one-time preparation of its helper
+        types (the first call in a process). Default 30.
+    .PARAMETER Source
+        Auto (default): COM first, UIA when the COM read cannot be accepted. UIA: UI Automation only
+        (diagnosis; the COM read is skipped).
+    .PARAMETER ExpectErrors
+        The caller knows the build / check failed (LastBuildInfo > 0, CheckAllObjects False): a COM list
+        without any error row is then not accepted (falls back to UIA).
+    .PARAMETER BuildPaneText
+        Internal (Build-TcProject passes it; leave it empty otherwise): the build pane text of the build that was
+        just run. The COM read is cross-checked against its error lines and takes the compiler codes from it.
+        Without it the pane is only used for the codes.
     .OUTPUTS
         data.counts      @{ errors; warnings; messages } from the summary buttons
         data.errors      [ @{ severity; code; description; project; file; line; column } ]
         data.warnings    same shape, present unless -IncludeWarnings:$false (may be empty)
         data.messages    same shape, only with -IncludeMessages
         data.truncated   $true when not every row could be read (no ScrollPattern / cap)
-        data.source      'ErrorList(UIA)'
+        data.source      'ErrorList(COM)' or 'ErrorList(UIA)'
+        data.fallbackReason  only on a UIA result after a COM attempt (failures included): why COM was not used, e.g.
+                         'scope-not-entire: ...', 'scope-unknown: ...', 'expected-errors-none-read: ...',
+                         'fewer-errors-than-build-pane: ...', 'severity-isolation-mismatch: ...',
+                         'error-level-unmapped: ...', 'com-read-failed:<why>', 'com-helper-unavailable: ...', 'com-error: ...'
+        data.comRead     COM results only: severityBy ('ErrorLevel' | 'ShowFlags'), dteMajor, readMs, rows, flagsRestored,
+                         errorsWithoutCode (error rows whose code the build pane could not give), paneCrossCheck, notes
         data.severityUnknown  $true when the rows could not be assigned a severity (the
                          filter buttons were not toggleable and more than one is on);
                          those rows are then in data.unclassified, NOT in data.errors
@@ -68,7 +103,17 @@
 
         [Parameter()]
         [ValidateRange(5, 600)]
-        [int]$TimeoutSec = 30
+        [int]$TimeoutSec = 30,
+
+        [Parameter()]
+        [ValidateSet('Auto', 'UIA')]
+        [string]$Source = 'Auto',
+
+        [Parameter()]
+        [switch]$ExpectErrors,
+
+        [Parameter()]
+        [string]$BuildPaneText
     )
 
     try { Assert-TcConnection } catch {
@@ -87,6 +132,25 @@
             -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED')
     }
 
+    # COM first (item 88): needs no window, no foreground, no UIA thread. Anything that is not provably the whole
+    # list falls back to the UIA scan below, with the reason in data.fallbackReason (fail closed).
+    $comFallbackReason = $null
+    $uiaTimeoutSec = $TimeoutSec
+    if ($Source -eq 'Auto') {
+        $comWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $comMaxMs = [int][Math]::Min(8000, [Math]::Max(1000, $TimeoutSec * 250))
+        $com = Get-TcErrorListViaCom -IncludeWarnings ([bool]$IncludeWarnings) -IncludeMessages ([bool]$IncludeMessages) -MaxMs $comMaxMs `
+            -ExpectErrors:$ExpectErrors -BuildPaneText $BuildPaneText
+        if ($com.accepted) { return (New-TcResult -Success $true -Data $com.data) }
+        $comFallbackReason = [string]$com.reason
+        $uiaTimeoutSec = [Math]::Max(1, $TimeoutSec - [int][Math]::Ceiling($comWatch.Elapsed.TotalSeconds))
+        Write-Verbose "Get-TcBuildErrors: COM read not used ($comFallbackReason); UI Automation scan."
+    }
+    $addFallback = {
+        param($Data)
+        if ($null -ne $comFallbackReason) { $Data | Add-Member -NotePropertyName 'fallbackReason' -NotePropertyValue $comFallbackReason -Force }
+    }
+
     # A previous scan that timed out may still be stuck inside UIA on its STA thread;
     # a second scan would compete for the same window (and toggle the same buttons).
     $cleanupWarning = $null
@@ -95,6 +159,7 @@
         $cleanupWarning = $script:TcUiaCleanupWarning
         if ($stillRunning -gt 0) {
             $busyData = [PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)'; scanBusy = $true }
+            & $addFallback $busyData
             if ($null -ne $cleanupWarning) { $busyData | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning }
             return New-TcResult -Success $false `
                 -ErrorMessage "ERRORLIST_UNAVAILABLE: the previous Error List scan has not finished yet ($stillRunning UIA thread(s) still running after a timeout); retry later or reconnect the IDE." `
@@ -106,6 +171,7 @@
             # the filter buttons and read a list with the Errors filter off (errors = 0 on a failed
             # build, a false success). Refuse this call; the next one scans (#75).
             $mayData = [PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)'; scanBusy = $false; scanMayBeRunning = $true }
+            & $addFallback $mayData
             if ($null -ne $cleanupWarning) { $mayData | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning }
             return New-TcResult -Success $false `
                 -ErrorMessage 'ERRORLIST_UNAVAILABLE: a leftover Error List scan from an earlier timeout was dropped and its UIA thread may still be running; no new scan was started in this call. Retry.' `
@@ -133,8 +199,8 @@
     # is taken off the scan budget: preparation + scan stay within -TimeoutSec (+ at most 1 s, the
     # scan always gets at least 1 s).
     $prepWatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $null = Initialize-TcUiaScanTypes -TimeoutSec ([Math]::Min(600, [Math]::Max(1, $TimeoutSec)))
-    $scanBudgetSec = [Math]::Max(1, $TimeoutSec - [int][Math]::Ceiling($prepWatch.Elapsed.TotalSeconds))
+    $null = Initialize-TcUiaScanTypes -TimeoutSec ([Math]::Min(600, [Math]::Max(1, $uiaTimeoutSec)))
+    $scanBudgetSec = [Math]::Max(1, $uiaTimeoutSec - [int][Math]::Ceiling($prepWatch.Elapsed.TotalSeconds))
     # @(): a single PSCustomObject has no usable .Count in PS 5.1
     $out = @(Invoke-TcUiaScan -Script $script:TcUiaErrorListScan -TimeoutSec $scanBudgetSec `
         -Arguments @($idePid, $true, [bool]$IncludeWarnings, [bool]$IncludeMessages, 2000, 150) `
@@ -149,6 +215,7 @@
                elseif ($null -ne $scan -and $scan.Notes.Count -gt 0) { [string]($scan.Notes -join '; ') }
                else { 'Error List window not found in the IDE process' }
         $data = [PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)' }
+        & $addFallback $data
         if ($null -ne $scan) { $data | Add-Member -NotePropertyName 'notes' -NotePropertyValue @($scan.Notes) }
         if ($null -ne $cleanupWarning) { $data | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning }
         return New-TcResult -Success $false -ErrorMessage "ERRORLIST_UNAVAILABLE: $why" -ErrorCode 'ERRORLIST_UNAVAILABLE' `
@@ -219,6 +286,7 @@
     if ($null -ne $scopeData) {
         $data | Add-Member -NotePropertyName 'scope' -NotePropertyValue $scopeData
     }
+    & $addFallback $data
     if ($shortfall.Count -gt 0 -or $scopeFiltered) {
         $data | Add-Member -NotePropertyName 'incomplete' -NotePropertyValue $true
         # $true when a count button read "X / Y" (shown / total): the totals do not depend on the scope

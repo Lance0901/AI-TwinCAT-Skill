@@ -1191,7 +1191,7 @@
                   {
                       "name":  "GetBuildErrors",
                       "cmdlet":  "Get-TcBuildErrors",
-                      "description":  "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI (zh-TW VS2022 'shown / total' labels report the total); other UI languages return ERRORLIST_UNAVAILABLE. In VS2022 the Error List scope filter is read from the scope combo itself (also while collapsed) and switched to Entire Solution before reading when it shows anything else (left switched, read back). Fewer rows read than the button totals, or a scope that could not be switched, return ERRORLIST_INCOMPLETE (data.missingRows, data.scope), never success with a partial list. BuildProject / CheckAllObjects / CleanProject keep the rows read and block (codeVerified=null) only when the ERROR rows are not proven complete; warnings read short there is data.warningCodes WARNINGS_INCOMPLETE, not blocking. data.errors / data.warnings include runtime / system log rows ('<source>' (<number>): ..., e.g. TcUnit / ADSLOGSTR output of a running PLC, #66): they are not compiler messages, see BuildProject data.runtimeMessages.",
+                      "description":  "Read the compiler messages currently in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Source 1 is COM (DTE2 ErrorList.ErrorItems read with a compiled helper, data.source 'ErrorList(COM)'): needs no visible Error List window and no foreground, a few ms per row. It is used only when it is provably the whole list: the Error List scope is Entire Solution (window caption), severity is certain, and, when the build failed, at least one error row was read; otherwise the UI Automation scan reads (data.source 'ErrorList(UIA)', data.fallbackReason says why). With COM, code is the Cxxxx of the matching build output pane line or null (the COM description has none), file is the base name + ' (Impl)'/' (Decl)' like the UIA grid (item.filePath = full path), column is null. Source 2, UIA: counts are read from the summary buttons in English and zh-TW UI (zh-TW VS2022 'shown / total' labels report the total); other UI languages return ERRORLIST_UNAVAILABLE. In VS2022 the Error List scope filter is read from the scope combo itself (also while collapsed) and switched to Entire Solution before reading when it shows anything else (left switched, read back). Fewer rows read than the button totals, or a scope that could not be switched, return ERRORLIST_INCOMPLETE (data.missingRows, data.scope), never success with a partial list. BuildProject / CheckAllObjects / CleanProject keep the rows read and block (codeVerified=null) only when the ERROR rows are not proven complete; warnings read short there is data.warningCodes WARNINGS_INCOMPLETE, not blocking. data.errors / data.warnings include runtime / system log rows ('<source>' (<number>): ..., e.g. TcUnit / ADSLOGSTR output of a running PLC, #66): they are not compiler messages, see BuildProject data.runtimeMessages.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -1211,9 +1211,26 @@
                                                                                 "type":  "integer",
                                                                                 "minimum":  5,
                                                                                 "maximum":  600,
-                                                                                "description":  "Hard limit for the UI Automation scan, including the one-time preparation of its helper types (the first call in a process; the scan gets what is left, at least 1 s). Default 30.",
+                                                                                "description":  "Hard limit for the whole call: the COM read gets at most a quarter of it (8 s at most), the UI Automation scan what is left (at least 1 s), including the one-time preparation of its helper types (the first call in a process). Default 30.",
                                                                                 "default":  30
-                                                                            }
+                                                                            },
+                                                             "Source":  {
+                                                                            "type":  "string",
+                                                                            "enum":  [
+                                                                                         "Auto",
+                                                                                         "UIA"
+                                                                                     ],
+                                                                            "description":  "Auto (default): COM first, UIA when the COM read cannot be accepted. UIA: UI Automation only (diagnosis; the COM read is skipped).",
+                                                                            "default":  "Auto"
+                                                                        },
+                                                             "ExpectErrors":  {
+                                                                                  "type":  "boolean",
+                                                                                  "description":  "The caller knows the build / check failed (LastBuildInfo > 0, CheckAllObjects False): a COM list without any error row is then not accepted (falls back to UIA)."
+                                                                              },
+                                                             "BuildPaneText":  {
+                                                                                   "type":  "string",
+                                                                                   "description":  "Internal (Build-TcProject passes it; leave it empty otherwise): the build pane text of the build that was just run. The COM read is cross-checked against its error lines and takes the compiler codes from it. Without it the pane is only used for the codes."
+                                                                               }
                                                          },
                                           "required":  [
 

@@ -105,7 +105,9 @@ function Save-TcArchive {
         $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray() -Force
         New-TcResult -Success $false -ErrorCode 'ARCHIVE_FAILED' -Data $data -ErrorMessage $m -Hint (Get-TcErrorHint -Code 'ARCHIVE_FAILED')
     }
-    $rowKey = { param($i) "$([string]$i.code)|$([string]$i.description)|$([string]$i.file)|$([string]$i.project)" }
+    # no code in the key: the COM read (item 88) has none unless the build pane gave one, the UIA read may; the same row
+    # must compare equal whichever source read the list before and after
+    $rowKey = { param($i) "$([string]$i.description)|$([string]$i.file)|$([string]$i.project)" }
     try {
         $dlg = Get-TcTreeItemDialogResult -Operation "SaveAsArchive '$FilePath'" -Data $data
         if ($null -ne $dlg) { return $dlg }

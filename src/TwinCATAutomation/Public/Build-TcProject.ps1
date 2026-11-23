@@ -172,6 +172,8 @@
                              totals, Errors total unreadable, or a filtered scope with rows missing, #117);
                              codeVerified = $null then, but errorItems / codeErrors still list the rows read (#138)
         data.errorListScope  the Error List scope filter @{ before; after; entire; switched } (#117)
+        data.errorListSource 'ErrorList(COM)' (DTE2 ErrorList.ErrorItems, item 88) or 'ErrorList(UIA)'; with UIA after a COM attempt
+        data.errorListFallbackReason  why COM was not used (Get-TcBuildErrors data.fallbackReason), only then
         data.missingRows     with an incomplete read: [ @{ severity; expected; read } ]
         data.errorListNote   warnings (only) read short, or a filtered scope whose counts all match: the error
                              rows are complete; warnings short also adds WARNINGS_INCOMPLETE to warningCodes
@@ -593,7 +595,8 @@
         # @() around the if: an if-expression unrolls its output (0 items -> AutomationNull -> JSON {}, 1 item -> a string)
         $warningLines = @(if ($warningLinesTruncated) { $allWarningLines | Select-Object -First $warnMaxLines } else { $allWarningLines })
 
-        # Error List (UI Automation): the PLC compiler does not report through DTE.
+        # Error List: COM (DTE2 ErrorList.ErrorItems, early-bound C# helper) first, UI Automation as the fallback
+        # (Get-TcBuildErrors; PowerShell late binding reads a fake 0 there, 實測 2026-11-23).
         # Every build gets the full Error List budget ($script:TcBuildErrorListTimeoutSec, 30 s):
         # the success path used to get 8 s, but the scan (show the pane, switch the scope, toggle
         # the severities, read the grid) took 16.5-17.8 s on a 4026 VS2022 XAE after a build that
@@ -604,7 +607,12 @@
         # libraries, not PLC code errors, so data.errors counts the code errors only.
         $fallbackErrors = if ($null -ne $failedProjects) { [int]$failedProjects } else { 0 }
         $fallbackWarnings = $allWarningLines.Count
-        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings
+        # item 88: the Error List is read through COM first (Get-TcBuildErrors); the build failed (LastBuildInfo > 0) ->
+        # a COM list without an error row is not accepted, and the pane of THIS build is the cross-check / code source
+        $elExpectErrors = ($null -ne $failedProjects -and [int]$failedProjects -gt 0)
+        $elPaneText = if ([string]$buildPaneRead.status -eq 'read') { [string]$buildPaneRead.text } else { $null }
+        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings `
+            -ExpectErrors:$elExpectErrors -BuildPaneText $elPaneText
         $errorItems = $els.errorItems
         $warningItems = $els.warningItems
         $errorCount = $els.errorCount
@@ -802,6 +810,9 @@
         }
         # #117 / #138: what the Error List read covered (scope filter, rows short of the button totals)
         if ($null -ne $els.scope) { $data | Add-Member -NotePropertyName 'errorListScope' -NotePropertyValue $els.scope }
+        # item 88: which source the Error List came from, and why COM was not used when UIA read it
+        if ($null -ne $els.errorListSource) { $data | Add-Member -NotePropertyName 'errorListSource' -NotePropertyValue $els.errorListSource }
+        if ($null -ne $els.errorListFallbackReason) { $data | Add-Member -NotePropertyName 'errorListFallbackReason' -NotePropertyValue $els.errorListFallbackReason }
         if ($els.incomplete) { $data | Add-Member -NotePropertyName 'missingRows' -NotePropertyValue @($els.missingRows) }
         if ($null -ne $els.errorListNote) { $data | Add-Member -NotePropertyName 'errorListNote' -NotePropertyValue $els.errorListNote }
         # Leftover timed-out Error List scans that were dropped (#75); on a failed read it also

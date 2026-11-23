@@ -19,7 +19,9 @@ function Test-TcPlcProject {
         Steps: the PLC project is resolved (-PlcProjectPath; several PLC projects without it ->
         PLC_PROJECT_AMBIGUOUS), a modal dialog in the IDE returns IDE_MODAL_DIALOG (nothing called),
         then CheckAllObjects(), then the Error List is read (Get-TcBuildErrors -IncludeWarnings, the
-        same rows and categories as Build-TcProject: Get-TcErrorListSummary).
+        same rows and categories as Build-TcProject: Get-TcErrorListSummary). The list is read through COM
+        first (item 88, data.errorListSource 'ErrorList(COM)'; a failed check with no error row there, or a
+        filtered Error List scope, falls back to UI Automation: data.errorListFallbackReason).
         Result:
           True  -> success, data.passed = $true, data.errorItems = @() (error rows still shown in
                    the Error List go to data.staleErrorItems with a warning), warnings in
@@ -128,7 +130,10 @@ function Test-TcPlcProject {
 
         # Error List: the full budget on every path, as Build-TcProject (#107: 8 s on the passed
         # path was too short for the VS2022 Error List scan; an upper bound, not a wait).
-        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog
+        # item 88: COM first; CheckAllObjects returned False -> a COM list without an error row is not accepted (UIA reads)
+        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -ExpectErrors:($passed -eq $false)
+        if ($null -ne $els.errorListSource) { $data | Add-Member -NotePropertyName errorListSource -NotePropertyValue $els.errorListSource -Force }
+        if ($null -ne $els.errorListFallbackReason) { $data | Add-Member -NotePropertyName errorListFallbackReason -NotePropertyValue $els.errorListFallbackReason -Force }
         # stale = left over from earlier operations: no file (category other) AND no compiler code
         $isStale = { param($i) $i.category -eq 'other' -and [string]::IsNullOrWhiteSpace([string]$i.code) }
         $located = @($els.errorItems | Where-Object { -not (& $isStale $_) })
