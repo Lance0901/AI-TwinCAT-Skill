@@ -210,37 +210,37 @@ try {
     }
 
     Set-Scan -Rows @() -Errors 0 -Warnings 28 -Scope ([PSCustomObject]@{ before = '目前專案'; after = '整個方案'; entire = $true; switched = $true })
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     $mw = @($r.data.missingRows | Where-Object { $_.severity -eq 'warnings' })
     Check 'C1 #117: 28 warnings on the button, 0 rows -> not success, ERRORLIST_INCOMPLETE' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE') (J $r.error)
     Check 'C1 data.missingRows names warnings 28 / 0, counts kept' ($mw.Count -eq 1 -and $mw[0].expected -eq 28 -and $mw[0].read -eq 0 -and $r.data.counts.warnings -eq 28) (J $r.data)
     Check 'C1 hint present' (-not [string]::IsNullOrWhiteSpace([string]$r.error.hint)) ''
 
     Set-Scan -Rows @((Row 'Error' 'e1')) -Errors 2 -Warnings 0
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     Check 'C2 errors 2, 1 row read -> ERRORLIST_INCOMPLETE (errors), partial row kept in data' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and @($r.data.missingRows)[0].severity -eq 'errors' -and @($r.data.errors).Count -eq 1) (J $r)
 
     # two identical warning rows against a total of 2: both count (no de-duplication here)
     Set-Scan -Rows @((Row 'Error' 'e1'), (Row 'Warning' 'w1'), (Row 'Warning' 'w1')) -Errors 1 -Warnings 2
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     Check 'C3 complete read -> success, data.scope carried' ($r.success -and @($r.data.warnings).Count -eq 2 -and $r.data.scope.entire -eq $true -and $null -eq $r.data.PSObject.Properties['missingRows']) (J $r)
 
     Set-Scan -Rows @() -Errors 0 -Warnings 0 -Scope ([PSCustomObject]@{ before = '目前專案'; after = '目前專案'; entire = $false; switched = $false })
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     Check "C4 scope stayed '目前專案' (switch failed) -> ERRORLIST_INCOMPLETE even with 0 / 0" (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and $r.data.scope.entire -eq $false -and $r.error.message -match '目前專案') (J $r.error)
 
     Set-Scan -Rows @() -Errors 0 -Warnings 28 -Scope ([PSCustomObject]@{ before = $null; after = $null; entire = $null; switched = $false })
-    $r = Get-TcBuildErrors -IncludeWarnings:$false -TimeoutSec 30
+    $r = Get-TcBuildErrors -IncludeWarnings:$false -TimeoutSec 30 -Source UIA
     Check 'C5 -IncludeWarnings:$false: warnings not compared -> success' ($r.success) (J $r)
 
     Set-Scan -Rows @((Row 'Unknown' 'a'), (Row 'Unknown' 'b'), (Row 'Unknown' 'c')) -Errors 1 -Warnings 2 -Toggle $false
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     Check 'C6 not isolatable, 3 rows for 1 + 2 -> success' ($r.success) (J $r.error)
     Set-Scan -Rows @((Row 'Unknown' 'a')) -Errors 1 -Warnings 2 -Toggle $false
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     Check "C6 not isolatable, 1 row for 1 + 2 -> ERRORLIST_INCOMPLETE 'total'" (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and @($r.data.missingRows)[0].severity -eq 'total' -and @($r.data.missingRows)[0].expected -eq 3) (J $r.data.missingRows)
 
-    function Get-Summary([int]$Fallback = 0) { & $mod { param($f) Get-TcErrorListSummary -TimeoutSec 30 -FallbackErrorCount $f } $Fallback }
+    function Get-Summary([int]$Fallback = 0) { & $mod { param($f) Get-TcErrorListSummary -TimeoutSec 30 -FallbackErrorCount $f -Source UIA } $Fallback }
     function Sel($x) { J ($x | Select-Object errorListError, incomplete, warningsIncomplete, errorListNote, errorCount, missingRows) }
 
     Set-Scan -Rows @((Row 'Warning' 'w1')) -Errors 0 -Warnings 28
@@ -263,7 +263,7 @@ try {
     Check 'C7d Errors total unreadable + warnings short -> errors not complete' ($s.errorListError -eq 'ERRORLIST_INCOMPLETE') (Sel $s)
 
     Set-Scan -Rows @((Row 'Warning' 'w1')) -Errors 0 -Warnings 1 -Scope ([PSCustomObject]@{ before = '目前專案'; after = '目前專案'; entire = $false; switched = $false })
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     $s = Get-Summary
     Check "C7e scope '目前專案', counts match: Get-TcBuildErrors fails closed, summary only notes it" (-not $r.success -and $null -eq $s.errorListError -and -not $s.warningsIncomplete -and $s.errorListNote -match 'every count matches') (Sel $s)
 
@@ -375,16 +375,16 @@ try {
     Check "F6 every read 0 rows, total 3 -> 'no rows read' + noRows, not unstable (#138 O5)" (@($g.NoRows) -contains 'Warning' -and @($g.Unstable).Count -eq 0 -and @($g.Notes | Where-Object { $_ -match 'no rows read' }).Count -eq 1 -and @($g.Notes | Where-Object { $_ -match 'NOT stable' }).Count -eq 0) (J $g)
     Set-Scan -Rows @() -Errors 0 -Warnings 3
     $global:ScanResult | Add-Member -NotePropertyName NoRows -NotePropertyValue @('Warning')
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     $mw = @($r.data.missingRows | Where-Object { $_.severity -eq 'warnings' })
     Check 'F6 Get-TcBuildErrors: missingRows noRows = true, unstable = false, still ERRORLIST_INCOMPLETE' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and $mw.Count -eq 1 -and $mw[0].noRows -and -not $mw[0].unstable) (J $r.data.missingRows)
 
     Set-Scan -Rows @((Row 'Warning' 'w1'), (Row 'Warning' 'w2')) -Errors 0 -Warnings 3
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     Check 'F4 junk excluded + one real row missing (2 of 3) -> ERRORLIST_INCOMPLETE' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE') (J $r.data.missingRows)
     Set-Scan -Rows @((Row 'Error' 'e1'), (Row 'Warning' 'w1'), (Row 'Warning' 'w2')) -Errors 1 -Warnings 2
     $global:ScanResult | Add-Member -NotePropertyName Unstable -NotePropertyValue @('Error')
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     $s = Get-Summary
     $mr = @($r.data.missingRows | Where-Object { $_.severity -eq 'errors' })
     Check 'F4 errors unstable, last read matches the total -> ERRORLIST_INCOMPLETE, summary blocks (codeVerified null)' (-not $r.success -and $mr.Count -eq 1 -and $mr[0].unstable -and $s.errorListError -eq 'ERRORLIST_INCOMPLETE') (J $r.data.missingRows)
@@ -406,8 +406,8 @@ try {
 
     Set-Scan -Rows @() -Errors 0 -Warnings 0
     $global:ScanNeedsSec = 17      # VS2022 measured 16.5-17.8 s (#107); simulated, nothing waits
-    $old = & $mod { Get-TcErrorListSummary -TimeoutSec 8 }
-    $new = & $mod { Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec }
+    $old = & $mod { Get-TcErrorListSummary -TimeoutSec 8 -Source UIA }
+    $new = & $mod { Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -Source UIA }
     Check 'D2 slow scan: the old 8 s budget times out (ERRORLIST_UNAVAILABLE)' ($old.errorListError -eq 'ERRORLIST_UNAVAILABLE') "$($old.errorListError)"
     Check 'D2 slow scan: the cmdlet budget reads the list' ($null -eq $new.errorListError) "$($new.errorListError) budgets=$($global:ScanBudgets -join ',')"
     $global:ScanNeedsSec = $null

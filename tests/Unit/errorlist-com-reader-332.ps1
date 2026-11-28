@@ -203,6 +203,16 @@ try {
     Check 'N1 the restore is read back: FlagsAfter equals FlagsBefore, FlagsMatchBefore, no note' ($r.FlagsRestored -and $r.FlagsMatchBefore -and $r.FlagsAfter[0] -and -not $r.FlagsAfter[1] -and $r.FlagsAfter[2] -and [string]::IsNullOrEmpty($r.RestoreNote)) (J @{ after = $r.FlagsAfter; note = $r.RestoreNote })
     Check 'N1 counts: errors 2 / warnings 1 / messages 1, all complete, not partial' ($r.ErrorCount -eq 2 -and $r.WarningCount -eq 1 -and $r.MessageCount -eq 1 -and $r.ErrorsComplete -and $r.WarningsComplete -and $r.MessagesComplete -and -not $r.Partial) (J @{ e = $r.ErrorCount; w = $r.WarningCount; m = $r.MessageCount })
     Check 'N2 the timing text names every kind of call (flagSets / counts / rows / sleeps)' ($r.Timing -match 'flagSets=10 ' -and $r.Timing -match 'counts=\d+' -and $r.Timing -match 'rows=4 ' -and $r.Timing -match 'sleeps=\d+') $r.Timing
+    # PR #332 round 3 item 4 (measured 2026-11-28: the time is the refilter after each flag write, paid by the first Count): no Count
+    # before the rows, and with all three buttons on the all-on count is read first and the final all-on step is left out
+    Check 'N7 (T,F,T): 14 Count calls (was 17: 3 per fetched severity less one, the final all-on step stays), refilters counted' ($r.Timing -match 'counts=14 ' -and $r.Timing -match 'refilters=\d+ refilterMs=\d+') $r.Timing
+    Reset-Fake -Flags @($true, $true, $true)
+    $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, $null)
+    Check 'N7 user has all three on: same rows and all-on count 4 (read before any flag change), buttons back to T,T,T' ($r.Ok -and (Descs $r.Errors) -eq 'e1,e2' -and (Descs $r.Warnings) -eq 'w1' -and (Descs $r.Messages) -eq 'm1' -and $r.AllCount -eq 4 -and $st.Flags[0] -and $st.Flags[1] -and $st.Flags[2] -and $r.FlagsRestored) (J @{ all = $r.AllCount; flags = $st.Flags; t = $r.Timing })
+    Check 'N7 all on: 6 refilters (3 all-off baselines + 3 isolated reads, no final all-on refilter), first Count is not a refilter' ($r.Timing -match 'refilters=6 ' -and $r.Timing -match 'counts=14 ') $r.Timing
+    Reset-Fake -Flags @($true, $true, $true) -Lag 1
+    $r = [TcAutomation.ErrorListComReader]::Read($null, 1, 5000, $null)
+    Check 'N7 all on with a Count that lags one read behind each flag change: still no swapped rows, all-on count 4' ($r.Ok -and (Descs $r.Errors) -eq 'e1,e2' -and (Descs $r.Warnings) -eq 'w1' -and (Descs $r.Messages) -eq 'm1' -and $r.AllCount -eq 4) ("e=$(Descs $r.Errors) w=$(Descs $r.Warnings) m=$(Descs $r.Messages) all=$($r.AllCount) $($r.Reason)")
 
     Reset-Fake
     $st.IgnoreWritesAfter = 9

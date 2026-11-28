@@ -14,6 +14,15 @@
 // still enters the sum check), the per-row ErrorItem reads are Description / FileName / Line / Project (Column is a
 // constant 1 and never used, ErrorLevel only where the host has a level table). The time of every kind of call is
 // measured in ErrorListComResult.Timing, so the next real-machine run shows where the rest goes.
+//
+// Where the time goes (measured 2026-11-28, VS2022 17 + XAE 4026, IDE launched hidden, 215 rows, PR #332 round 4 preparation):
+// ErrorItems.Count costs 0 ms and getting ErrorItems 5 ms while the flags stay as they are. The first ErrorItems.Count after a
+// Show* flag write takes 400-550 ms: the IDE refilters the list then (the write itself is 0-16 ms, sometimes 500 ms when the
+// previous refilter is still running), and that first Count already has the new value. A cached ErrorItems object is a snapshot
+// (its Count never follows a flag change). So the read time is the number of flag changes, not the number of Count calls:
+// Timing reports them as refilters / refilterMs. What this version saves: the Count before the rows (the stable count already
+// fetched that ErrorItems), and, when the user has all three buttons on, the final all-on step (the all-on count is read first,
+// before any flag is changed, and the restore puts the flags back anyway).
 // Rows read before a timeout stay in the result (Partial = true): never an empty list that hides what was read.
 //
 // Deadline (CODING_STANDARDS 1): maxMs is checked BETWEEN source calls (before every row, every poll). One call that
@@ -104,21 +113,27 @@ namespace TcAutomation
     sealed class TimedSource
     {
         readonly IErrorListSource s;
-        public int FlagSets, Counts, Rows, Sleeps;
-        public long FlagSetMs, CountMs, RowMs, SleepMs;
+        public int FlagSets, Counts, Rows, Sleeps, Refilters;
+        public long FlagSetMs, CountMs, RowMs, SleepMs, RefilterMs;
+        bool dirty;   // a flag was written since the last Count: the next Count pays the refilter
         public TimedSource(IErrorListSource source) { s = source; }
         public bool GetFlag(int i) { return s.GetFlag(i); }
         public void SetFlag(int i, bool v)
         {
             var sw = Stopwatch.StartNew();
             try { s.SetFlag(i, v); }
-            finally { FlagSets++; FlagSetMs += sw.ElapsedMilliseconds; }
+            finally { FlagSets++; FlagSetMs += sw.ElapsedMilliseconds; dirty = true; }
         }
         public int Count()
         {
             var sw = Stopwatch.StartNew();
             try { return s.Count(); }
-            finally { Counts++; CountMs += sw.ElapsedMilliseconds; }
+            finally
+            {
+                long ms = sw.ElapsedMilliseconds;
+                Counts++; CountMs += ms;
+                if (dirty) { Refilters++; RefilterMs += ms; dirty = false; }
+            }
         }
         public ErrorListComRow RowAt(int i, bool withLevel)
         {
@@ -134,6 +149,7 @@ namespace TcAutomation
         public string Text()
         {
             return "flagSets=" + FlagSets + " flagSetMs=" + FlagSetMs + " counts=" + Counts + " countMs=" + CountMs
+                + " refilters=" + Refilters + " refilterMs=" + RefilterMs
                 + " rows=" + Rows + " rowMs=" + RowMs + " sleeps=" + Sleeps + " sleepMs=" + SleepMs;
         }
     }
@@ -199,10 +215,9 @@ namespace TcAutomation
         }
 
         // Rows go into 'into' as they are read: a timeout leaves what was read in the list (Partial), it is not thrown away.
-        static void ReadRows(TimedSource s, int expected, List<ErrorListComRow> into, ErrorListComOptions o, Budget b)
+        // The rows belong to the ErrorItems of the last Count (StableCount just read it twice equal): no Count before the rows.
+        static void ReadRows(TimedSource s, int count, List<ErrorListComRow> into, ErrorListComOptions o, Budget b)
         {
-            int count = s.Count();
-            if (count != expected) throw new ReasonException("count-changed");
             b.Extend((long)count * o.PerRowMs);
             for (int i = 1; i <= count; i++)   // 1-based, inclusive
             {
@@ -278,6 +293,11 @@ namespace TcAutomation
                 res.FlagsRead = true;
                 res.FlagsRestored = true;   // until the first change
 
+                // all three on already (the default view): the all-on count is read now, before any change, and the final all-on
+                // step is left out (the restore sets the same flags). Otherwise it is read at the end as before.
+                bool allOnBefore = res.FlagsBefore[0] && res.FlagsBefore[1] && res.FlagsBefore[2];
+                if (allOnBefore) res.AllCount = StableCount(s, o.SettleMs, budget);
+
                 res.FlagsChanged = true;
                 res.ErrorCount = ReadWithFlags(s, true, false, false, true, res.Errors, o, budget);
                 res.ErrorsComplete = true;
@@ -286,8 +306,11 @@ namespace TcAutomation
                 res.MessageCount = ReadWithFlags(s, false, false, true, o.FetchMessages, res.Messages, o, budget);
                 res.MessagesComplete = true;
                 // no all-off step here: the sum of the three isolated counts must equal this count (checked by the caller)
-                SetFlags(s, true, true, true);
-                res.AllCount = StableCount(s, o.SettleMs, budget);
+                if (!allOnBefore)
+                {
+                    SetFlags(s, true, true, true);
+                    res.AllCount = StableCount(s, o.SettleMs, budget);
+                }
                 res.Ok = true;
             }
             catch (ReasonException ex) { res.Ok = false; res.Reason = ex.Reason; }

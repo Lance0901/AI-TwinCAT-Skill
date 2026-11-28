@@ -110,7 +110,7 @@ try {
     $r = Run-Build
     Check 'S1 failedProjects $null + pane unreadable + COM 0 rows + UIA cannot read: NOT success' (-not $r.success) (J $r.error)
     Check 'S1 the result is BUILD_STATUS_UNKNOWN, buildSucceeded $null, not "built"' ($r.error.code -eq 'BUILD_STATUS_UNKNOWN' -and $null -eq $r.data.buildSucceeded -and $r.data.completeBuild -ne $true) (J $r.data)
-    Check 'S1 COM was not even read (no summary, so no Show* flag was touched); UIA tried' ($global:ReadCalls -eq 0 -and $global:UiaCalls -eq 1) "reads=$global:ReadCalls uia=$global:UiaCalls"
+    Check 'S1 COM was not even read (no summary, so no Show* flag was touched); no UIA scan either (UIA fallback off by default, PR #332 round 3)' ($global:ReadCalls -eq 0 -and $global:UiaCalls -eq 0 -and $r.data.errorListError -eq 'ERRORLIST_UNVERIFIED') "reads=$global:ReadCalls uia=$global:UiaCalls el=$($r.data.errorListError)"
     Check 'S1 the reason is kept: errorListFallbackReason build-summary-missing' ([string]$r.data.errorListFallbackReason -match '^build-summary-missing') (J $r.data.errorListFallbackReason)
 
     # --- S2: pane readable but without a summary line (unknown UI language / aborted build): same
@@ -135,17 +135,19 @@ try {
     $r = Run-Build
     Check 'U3 pane error line "b" has no row, only a Library Manager row besides "a": rejected (build-pane-error-not-in-list), not LIBRARY_UNRESOLVED' ([string]$r.data.errorListFallbackReason -match '^build-pane-error-not-in-list' -and $r.error.code -ne 'LIBRARY_UNRESOLVED') ("$($r.error.code) $($r.data.errorListFallbackReason)")
 
-    # --- V: no summary, UIA reads a complete clean list -> success through UIA (fallback reason kept)
+    # --- V: no summary; a UIA scan would read a complete clean list, but the UIA fallback is off by default (it took the foreground,
+    # PR #332 round 3): not success, no UIA scan, the reason kept
     $global:PaneRead = [PSCustomObject]@{ status = 'unreadable'; name = $null; guid = $null; index = $null; matchedBy = $null; text = ''; panes = @(); error = 'unit' }
     Set-Com @{ allCount = 0 }
     Set-Uia 0
+    $uiaBefore = $global:UiaCalls
     $r = Run-Build
-    Check 'V1 no summary, UIA reads 0 rows with 0 on the button: success via UIA, not via COM' ($r.success -and $r.data.errorListSource -eq 'ErrorList(UIA)' -and [string]$r.data.errorListFallbackReason -match '^build-summary-missing') (J $r.data.errorListSource)
+    Check 'V1 no summary: not success (BUILD_STATUS_UNKNOWN), errorListError ERRORLIST_UNVERIFIED, no UIA scan, errorListFallbackReason build-summary-missing' (-not $r.success -and $r.error.code -eq 'BUILD_STATUS_UNKNOWN' -and $r.data.errorListError -eq 'ERRORLIST_UNVERIFIED' -and $global:UiaCalls -eq $uiaBefore -and [string]$r.data.errorListFallbackReason -match '^build-summary-missing') ("$($r.error.code) $($r.data.errorListError) $($r.data.errorListFallbackReason) uia=$($global:UiaCalls)")
 
     # --- W: callers without a build pane never ask for COM
     $seen = & $mod {
         $script:SeenSource = @{}
-        function script:Get-TcBuildErrors { [CmdletBinding()] param([switch]$IncludeWarnings, [switch]$IncludeMessages, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet('Auto', 'UIA')][string]$Source = 'Auto')
+        function script:Get-TcBuildErrors { [CmdletBinding()] param([switch]$IncludeWarnings, [switch]$IncludeMessages, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet('COM', 'Auto', 'UIA')][string]$Source = 'Auto')
             $global:SeenSource = $Source
             [PSCustomObject]@{ success = $true; error = $null; data = [PSCustomObject]@{ counts = [PSCustomObject]@{ errors = 0; warnings = 0; messages = 0 }; errors = @(); warnings = @(); truncated = $false; source = 'ErrorList(UIA)' } } }
         $null = Get-TcErrorListSummary -Source UIA

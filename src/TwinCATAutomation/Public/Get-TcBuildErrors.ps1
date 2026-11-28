@@ -2,7 +2,7 @@
     <#
     .SYNOPSIS
         Reads the compiler messages of the IDE "Error List" (errors, and optionally warnings /
-        messages): through COM (DTE2 ErrorList.ErrorItems) first, UI Automation as the fallback.
+        messages) through COM (DTE2 ErrorList.ErrorItems). UI Automation only on request (-Source Auto / UIA).
     .DESCRIPTION
         Source 1, COM (data.source 'ErrorList(COM)'; item 88, re #320 / #329 / #300): the Error List
         of the connected IDE is read with an early-bound C# helper (ErrorListComReader.cs; PowerShell
@@ -10,26 +10,30 @@
         takes about 2 ms per row (529 rows 0.96 s; the UIA scan timed out on the same list, #329). The
         Errors / Warnings / Messages buttons are set on for the read (ShowErrors / ShowWarnings /
         ShowMessages) and put back afterwards. The result is accepted only when it is provably the whole
-        list (fail closed: a filtered Error List answers 0 rows without an error):
+        list (fail closed: a filtered Error List answers 0 rows without an error); a rejected read is ERRORLIST_UNVERIFIED /
+        ERRORLIST_UNAVAILABLE with data.comReason (Source Auto, opt-in: the UIA scan reads instead):
           - the Error List window caption is the bare title (Entire Solution); 'Error List - Current
-            Project (X)' / '- Current Document' / '- Open Documents' or an unknown caption -> UIA
+            Project (X)' / '- Current Document' / '- Open Documents' or an unknown caption -> rejected
           - severity: every host by reading one Show* flag at a time (each read after an all-off step that must
             show 0 rows); the three reads must add up to the all-flags count. 4024 (TcXaeShell 15.0, ErrorLevel
             error 4 / warning 2 / message 1 = High / Medium / Low, vsBuildErrorLevel) also cross-checks every row's
             level against its flag; 4026 (ErrorLevel is 2 for every row) has no such table
-          - -ExpectErrors (the build / check failed) and no error row read -> UIA
+          - -ExpectErrors (the build / check failed) and no error row read -> rejected
           - -BuildPaneText (the pane of this build): more error lines there than error rows, or an error line without a
-            row of the same file and text -> UIA
+            row of the same file and text -> rejected
           - -RequireBuildSummary (callers that decide success from the list): no end summary line in the pane of this
-            build ('Build complete -- N errors' / MSBuild 'Build: .. failed'), or fewer error rows than it says -> UIA.
+            build ('Build complete -- N errors' / MSBuild 'Build: .. failed'), or fewer error rows than it says -> rejected.
             COM cannot see the Error List search box or column filters; the summary is what rules a filtered list out
-          - the Error List window does not exist and could not be created ('errorlist-create-failed'): UIA reads
+          - the Error List window does not exist and could not be created ('errorlist-create-failed'): ERRORLIST_UNAVAILABLE
             (a missing window is created hidden through ToolWindows.ErrorList, never activated: data.comRead.errorListCreated)
           - nothing proves the list is not filtered (PR #332 report item 8: text in the Error List search box shows 0 rows to COM,
             it looked like a clean build): a standalone read (no -BuildPaneText) is compared with the LAST build summary of the
             build pane; more errors / failed projects there than rows read -> 'fewer-errors-than-last-build-summary', and 0 error
-            rows with no summary and no -ZeroErrorsKnown -> 'errors-zero-unverified'. Both go to UIA, which compares the rows with
-            the button totals (ERRORLIST_INCOMPLETE) or says ERRORLIST_UNAVAILABLE; never success with 0 errors that nothing proves
+            rows with no summary and no -ZeroErrorsKnown -> 'errors-zero-unverified'. Both are ERRORLIST_UNVERIFIED (Source Auto: the
+            UIA scan compares the rows with the button totals); never success with 0 errors that nothing proves
+        Budget, measured 2026-11-28 (VS2022, hidden IDE, 215 rows): the time goes into the IDE refiltering the list after each
+        Show* flag change (400-550 ms, paid by the first ErrorItems.Count after it); Count itself, the flag writes and the row reads
+        are a few ms each (data.comRead.timing: refilters / refilterMs).
         The compiler code (Cxxxx / SAxxxx) is not in the COM description: it is taken from the build
         pane line with the same file and text, else $null. file / project / line have the UIA form
         (file = base name + ' (Impl)' / ' (Decl)' as the grid shows it, project = project name, line =
@@ -63,7 +67,8 @@
     .PARAMETER IncludeMessages
         Also read message rows (data.messages).
     .PARAMETER TimeoutSec
-        Limit for the whole call: the COM path gets a quarter of it (8 s at most) for the fixed work (compile, flags, pane,
+        Limit for the whole call. Source COM (default): all of it goes to the COM read (fixed work and rows; 529 rows took 5.1-5.7 s,
+        PR #332 round 3). Source Auto: the COM path gets a quarter of it (8 s at most) for the fixed work (compile, flags, pane,
         codes; checked between COM calls) plus time for every row it fetches, in all at most 60 % of it (18 s of the
         default 30: 529 rows need more than a flat 7.5 s, PR #332 report item 2); the UI Automation scan gets what is
         left (at least 1 s),
@@ -71,11 +76,16 @@
         one COM call that blocks inside the IDE (modal dialog) cannot be interrupted, the same limit as
         Invoke-TcComRetry (it runs under its modal-dialog watchdog). Default 30.
     .PARAMETER Source
-        Auto (default): COM first, UIA when the COM read cannot be accepted. UIA: UI Automation only
-        (diagnosis; the COM read is skipped).
+        COM (default): the COM read only. When it cannot be accepted the result is ERRORLIST_UNVERIFIED (read, but not provably the
+        whole list: search box text, scope filter, fewer rows than the build summary, 0 rows nothing proves, severities not isolated)
+        or ERRORLIST_UNAVAILABLE (not read: COM error, timeout, helper not compiled, Error List not creatable), with data.comReason,
+        data.uiaFallback = 'off' and a hint for that reason; the rows a COM read that stopped early had read stay in data (partial).
+        No window is touched (PR #332 round 3: every UI Automation fallback brought a minimized or covered IDE to the front).
+        Auto (opt-in): COM first, the UI Automation scan when the COM read cannot be accepted (old behaviour; it can bring the
+        IDE window to the front). UIA: UI Automation only (diagnosis; the COM read is skipped; same foreground effect).
     .PARAMETER ExpectErrors
         The caller knows the build / check failed (LastBuildInfo > 0, CheckAllObjects False): a COM list
-        without any error row is then not accepted (falls back to UIA).
+        without any error row is then not accepted (ERRORLIST_UNVERIFIED; Source Auto: the UIA scan reads).
     .PARAMETER ZeroErrorsKnown
         Internal (Test-TcPlcProject passes it when CheckAllObjects returned True; not an MCP parameter): the caller knows there
         is no error, so a COM list with no error row is consistent and needs no build summary.
@@ -148,8 +158,8 @@
         [int]$TimeoutSec = 30,
 
         [Parameter()]
-        [ValidateSet('Auto', 'UIA')]
-        [string]$Source = 'Auto',
+        [ValidateSet('COM', 'Auto', 'UIA')]
+        [string]$Source = 'COM',
 
         [Parameter()]
         [switch]$ExpectErrors,
@@ -249,12 +259,21 @@
     }
 
     # COM first (item 88): needs no window, no foreground, no UIA thread. Anything that is not provably the whole
-    # list falls back to the UIA scan below, with the reason in data.fallbackReason (fail closed).
+    # list is NOT accepted (fail closed). Source COM (default, PR #332 round 3: every UIA fallback took the foreground, a minimized or
+    # covered IDE came to the front): the result is ERRORLIST_UNVERIFIED / ERRORLIST_UNAVAILABLE with data.comReason and a hint for
+    # that reason, the screen is never touched. Source Auto (opt-in): the UIA scan below reads instead, data.fallbackReason says why.
     $uiaTimeoutSec = $TimeoutSec
-    if ($Source -eq 'Auto') {
+    if ($Source -ne 'UIA') {
         $comWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $comMaxMs = [int][Math]::Min(8000, [Math]::Max(1000, $TimeoutSec * 250))
-        $comCapMs = [int][Math]::Max($comMaxMs, $TimeoutSec * 600)
+        if ($Source -eq 'COM') {
+            # no UIA scan after it: the COM read gets the whole limit (fixed work and rows; 529 rows took 5.1-5.7 s, round 3)
+            $comMaxMs = [int]($TimeoutSec * 1000)
+            $comCapMs = $comMaxMs
+        }
+        else {
+            $comMaxMs = [int][Math]::Min(8000, [Math]::Max(1000, $TimeoutSec * 250))
+            $comCapMs = [int][Math]::Max($comMaxMs, $TimeoutSec * 600)
+        }
         $com = Get-TcErrorListViaCom -IncludeWarnings ([bool]$IncludeWarnings) -IncludeMessages ([bool]$IncludeMessages) -MaxMs $comMaxMs -CapMs $comCapMs `
             -ExpectErrors:$ExpectErrors -ZeroErrorsKnown:$ZeroErrorsKnown -BuildPaneText $BuildPaneText -RequireBuildSummary:$RequireBuildSummary
         if ($com.accepted) { return (New-TcResult -Success $true -Data $com.data) }
@@ -263,8 +282,19 @@
         if ($null -ne $com.PSObject.Properties['flagsRestored'] -and -not [bool]$com.flagsRestored) { $comFlagsNotRestored = $true }
         if ($null -ne $com.PSObject.Properties['errorListCreated'] -and [bool]$com.errorListCreated) { $comCreated = $true }
         if ($null -ne $com.PSObject.Properties['errorListHidden'] -and -not [bool]$com.errorListHidden) { $comNotHidden = $true }
+        if ($Source -eq 'COM') {
+            $code = Get-TcErrorListComFailureCode -Reason $comFallbackReason
+            $data = [PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(COM)'; comReason = $comFallbackReason; uiaFallback = 'off' }
+            if ($comFlagsNotRestored) { $data | Add-Member -NotePropertyName 'comFlagsRestored' -NotePropertyValue $false }
+            if ($comCreated) { $data | Add-Member -NotePropertyName 'comErrorListCreated' -NotePropertyValue $true }
+            if ($comNotHidden) { $data | Add-Member -NotePropertyName 'comErrorListHidden' -NotePropertyValue $false }
+            if ($null -ne $cleanupWarning) { $data | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning }
+            & $addPartial $data $true
+            $msg = & $partialText "${code}: the Error List was read through COM but not accepted ($comFallbackReason). No UI Automation scan was made (Source COM, the default: it would bring the IDE window to the front)."
+            return New-TcResult -Success $false -ErrorMessage $msg -ErrorCode $code -Hint (Get-TcErrorListComHint -Reason $comFallbackReason) -Data $data
+        }
         $uiaTimeoutSec = [Math]::Max(1, $TimeoutSec - [int][Math]::Ceiling($comWatch.Elapsed.TotalSeconds))
-        Write-Verbose "Get-TcBuildErrors: COM read not used ($comFallbackReason); UI Automation scan."
+        Write-Verbose "Get-TcBuildErrors: COM read not used ($comFallbackReason); UI Automation scan (Source Auto)."
     }
     # The Error List is NOT opened here (PR #332 real-machine report item 4): ExecuteCommand('View.ErrorList') restored a minimized
     # VS2022 and pulled it to the foreground. An Error List that is not on screen is invisible to UIA: ERRORLIST_UNAVAILABLE below,

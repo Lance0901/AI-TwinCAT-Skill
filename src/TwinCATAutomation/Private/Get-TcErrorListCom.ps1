@@ -41,7 +41,7 @@
 #    Invoke-TcComRetry. Moving it to a background runspace was not done: an abandoned read keeps the user's Show* flags
 #    changed (the restore sits in its finally block), which is worse than a late return. Retries are one extra attempt at
 #    most and stop at $script:TcComCallDeadline.
-#  - File encoding: ASCII (the zh-TW titles are built from code points).
+#  - File encoding: UTF-8 with BOM (the zh-TW Error List title is still built from code points; the hints of Get-TcErrorListComHint are zh-TW text).
 
 # vsBuildErrorLevel values per IDE host (key = DTE.Version major). 15 = TcXaeShell 15.0 (VS2017 shell); 17.x maps nothing.
 $script:TcErrorLevelSeverityByDteMajor = @{
@@ -209,9 +209,12 @@ function ConvertFrom-TcBuildPaneDiagnostics {
     $out = [System.Collections.Generic.List[object]]::new()
     if ([string]::IsNullOrWhiteSpace($Text)) { return , $out.ToArray() }
     $rx = [regex]'(?i)^\s*(?<file>.+?)\((?<line>\d+)(?:,\d+)?\)\s*:\s*(?<sev>error|warning)\b\s*:?\s*(?:(?<code>[A-Za-z]{1,3}\d{3,5})\b\s*:?\s*)?(?<text>.*?)\s*$'
+    # saBlock: number of the static analysis section the line is in (0 = before any). See Select-TcCurrentPaneDiagnostics.
+    $saBlock = 0
     foreach ($ln in ($Text -split "`n")) {
         $l = $ln.TrimEnd("`r")
         if ($l.Trim() -eq '') { continue }
+        if ($l -match $script:TcPaneStaticAnalysisStartPattern) { $saBlock++; continue }
         $m = $rx.Match($l)
         if (-not $m.Success) { continue }
         $out.Add([PSCustomObject]@{
@@ -220,9 +223,38 @@ function ConvertFrom-TcBuildPaneDiagnostics {
                 line     = [int]$m.Groups['line'].Value
                 code     = $(if ($m.Groups['code'].Success) { $m.Groups['code'].Value.ToUpperInvariant() } else { $null })
                 text     = $m.Groups['text'].Value
+                saBlock  = $saBlock
             })
     }
     return , $out.ToArray()
+}
+
+# Start line of a static analysis section of the PLC compiler in the build pane (English in every UI language seen).
+# 實測 2026-11-28 (VS2022 zh-TW + XAE 4026, TE1200 project, one BuildProject): the pane has 'Additional code checks ...' (342 SA error
+# lines, 'Additional code checks complete -- 342 errors') and later 'Static analysis...' (190 SA error lines, 'Static analysis complete --
+# 190 errors'); the Error List keeps only the 190 rows of the last section. Counting both made 529 pane errors against 190 rows.
+$script:TcPaneStaticAnalysisStartPattern = '^\s*(Additional code checks|Static analysis)\s*\.\.\.\s*$'
+
+function Select-TcCurrentPaneDiagnostics {
+    <#
+    .SYNOPSIS
+        The pane lines (ConvertFrom-TcBuildPaneDiagnostics) the Error List can be compared with: every compiler line, but of the static
+        analysis lines (code SAxxxx) only those of the LAST static analysis section of the pane.
+    .DESCRIPTION
+        One build can run the TE1200 checks twice ('Additional code checks ...' while compiling, 'Static analysis...' after it); the Error
+        List shows the rows of the last run only (實測 2026-11-28, see $script:TcPaneStaticAnalysisStartPattern). SA lines outside any
+        section (saBlock 0) are kept when no section exists. Non-SA lines are never dropped (a compile error is always in the list).
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][object[]]$PaneLines)
+    $lines = @($PaneLines | Where-Object { $null -ne $_ })
+    $isSa = { param($l) -not [string]::IsNullOrWhiteSpace([string]$l.code) -and ([string]$l.code) -match '^SA\d' }
+    $last = 0
+    foreach ($l in $lines) {
+        if ((& $isSa $l) -and $null -ne $l.PSObject.Properties['saBlock'] -and [int]$l.saBlock -gt $last) { $last = [int]$l.saBlock }
+    }
+    if ($last -eq 0) { return , $lines }
+    return , @($lines | Where-Object { -not (& $isSa $_) -or [int]$_.saBlock -eq $last })
 }
 
 function ConvertFrom-TcBuildPaneSummary {
@@ -480,17 +512,56 @@ function Get-TcErrorListComVerdict {
         }
     }
     if ($null -ne $PaneLines) {
-        $paneErrors = @($PaneLines | Where-Object { $_.severity -eq 'Error' }).Count
+        # static analysis lines of an earlier section of the same build are not in the Error List (Select-TcCurrentPaneDiagnostics)
+        $current = Select-TcCurrentPaneDiagnostics -PaneLines $PaneLines
+        $dropped = @($PaneLines | Where-Object { $null -ne $_ -and $_.severity -eq 'Error' }).Count - @($current | Where-Object { $_.severity -eq 'Error' }).Count
+        if ($dropped -gt 0) { $notes.Add("$dropped static analysis error line(s) of an earlier static analysis section of this build pane were not compared (the Error List keeps the last section only)") }
+        $paneErrors = @($current | Where-Object { $_.severity -eq 'Error' }).Count
         if ($paneErrors -gt $ErrorRows) {
-            return (& $verdict $false "fewer-errors-than-build-pane: the build pane lists $paneErrors error line(s), the COM list has $ErrorRows error row(s)")
+            return (& $verdict $false "fewer-errors-than-build-pane: the build pane lists $paneErrors error line(s) (last static analysis section only), the COM list has $ErrorRows error row(s)")
         }
-        $unmatched = Get-TcUnmatchedPaneErrorCount -PaneLines $PaneLines -ErrorItems $ErrorItems
+        $unmatched = Get-TcUnmatchedPaneErrorCount -PaneLines $current -ErrorItems $ErrorItems
         if ($unmatched -gt 0) {
             return (& $verdict $false "build-pane-error-not-in-list: $unmatched error line(s) of the build pane have no row with the same file and text in the COM list")
         }
     }
     if (-not $flagsOk) { $notes.Add($restoreText) }
     return (& $verdict $true $null)
+}
+
+function Get-TcErrorListComFailureCode {
+    <#
+    .SYNOPSIS
+        Error code of a COM read that was not accepted (Get-TcBuildErrors -Source COM, the default; no UIA fallback):
+        ERRORLIST_UNAVAILABLE when the list was not read (COM error, timeout, helper, Error List not creatable),
+        ERRORLIST_UNVERIFIED when it was read but is not provably the whole list (filter, summary, isolation).
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][string]$Reason)
+    $r = [string]$Reason
+    if ($r -match '^(com-error|com-read-failed|com-helper-unavailable|com-budget-exceeded|com-unavailable|errorlist-create-failed)') { return 'ERRORLIST_UNAVAILABLE' }
+    return 'ERRORLIST_UNVERIFIED'
+}
+
+function Get-TcErrorListComHint {
+    <#
+    .SYNOPSIS
+        The next step for a COM read that was not accepted, by its reason (data.comReason). Never asks to click anything in
+        the IDE on its own: the user decides; Source=Auto (UIA, brings the IDE window to the front) is named as the opt-in.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][string]$Reason)
+    $r = [string]$Reason
+    $uia = 'Source=Auto 會改用 UI Automation 掃 Error List,但會把 IDE 視窗帶到前景，只在使用者同意時用。'
+    if ($r -match '^scope-(not-entire|unknown)') { return "Error List 的範圍不是「整個方案」(Entire Solution,data.comReason 有視窗標題):請使用者在 IDE 的 Error List 把範圍選回整個方案再重跑,tcAuto 不會自己切。$uia" }
+    if ($r -match '^(fewer-errors-than-last-build-summary|errors-zero-unverified)') { return "單獨讀 Error List 時證明不了是整份清單(搜尋框有字、欄位篩選，或窗格沒有 build 摘要):先跑 BuildProject(用這次 build 的摘要驗證),或請使用者清空 Error List 搜尋框與篩選後重跑 GetBuildErrors。不要把這次結果當成 0 個錯誤。$uia" }
+    if ($r -match '^(build-summary-missing|fewer-errors-than-build-summary|fewer-errors-than-build-pane|build-pane-error-not-in-list|expected-errors-none-read)') { return "Error List 的列和這次 build 窗格對不上(data.comReason 有數字):多半是 Error List 搜尋框或欄位篩選藏了列。請使用者清空後重跑 BuildProject;持續出現就把 data.comReason 回報。$uia" }
+    if ($r -match '^(severity-isolation-mismatch|error-level-mismatch)') { return 'Error List 在讀取途中變了(build 或 Check 還在寫入?):等 IDE 閒下來再重跑 GetBuildErrors;持續出現就回報 data.comReason。' }
+    if ($r -match '^(com-read-failed:timeout|com-budget-exceeded|com-read-failed:count-)') { return "COM 讀取在時限內沒讀完(清單大或 IDE 忙):加大 TimeoutSec(預設 30)或 IncludeWarnings=false 再重跑。data.partial = true 時 data.errors 是已讀到的列，不是整份清單。" }
+    if ($r -match '^com-helper-unavailable') { return "COM 讀取元件編譯失敗(找不到 IDE 的 EnvDTE.dll,見 data.comReason):回報這段訊息。$uia" }
+    if ($r -match '^errorlist-create-failed') { return "IDE 沒有 Error List 視窗，背景也建不出來：請使用者在 IDE 開一次「檢視 > 錯誤清單」(View > Error List)再重跑。" }
+    if ($r -match '^com-read-failed:flags-') { return '切 Error List 的錯誤/警告/訊息按鈕沒有生效(IDE 忙或清單被鎖住):等 IDE 閒下來重跑;data.comFlagsRestored = false 時請使用者看一下這三顆按鈕是否和原本一樣。' }
+    return 'COM 呼叫失敗或 IDE 忙(data.comReason):先 GetIdeModalDialog 看有沒有對話框擋著，沒有就稍後重跑 GetBuildErrors。'
 }
 
 function Get-TcErrorListComAssemblyPaths {

@@ -441,35 +441,35 @@ try {
     $r = Get-TcBuildErrors -TimeoutSec 30
     Check 'G1 COM accepted: success, source COM, the UIA scan was not started' ($r.success -and $r.data.source -eq 'ErrorList(COM)' -and $global:UiaCalls -eq 0 -and $r.data.counts.errors -eq 1 -and @($r.data.warnings).Count -eq 1) (J $r)
     Set-Com @{ caption = 'Error List - Open Documents'; allCount = 1; errors = @((Row 2 'e')) }
-    $r = Get-TcBuildErrors -TimeoutSec 30
-    Check 'G2 COM rejected (scope): the UIA scan reads, source UIA, data.fallbackReason says why' ($r.success -and $r.data.source -eq 'ErrorList(UIA)' -and $global:UiaCalls -eq 1 -and $r.data.fallbackReason -match '^scope-not-entire') (J $r.data)
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
+    Check 'G2 Source Auto (opt-in): COM rejected (scope): the UIA scan reads, source UIA, data.fallbackReason says why' ($r.success -and $r.data.source -eq 'ErrorList(UIA)' -and $global:UiaCalls -eq 1 -and $r.data.fallbackReason -match '^scope-not-entire') (J $r.data)
     Check 'G2 the UIA budget is the caller budget minus what COM used (<= 30)' ($global:UiaBudgets[0] -le 30 -and $global:UiaBudgets[0] -ge 1) "$($global:UiaBudgets -join ',')"
     $before = $global:ReadCalls.Count
     $r = Get-TcBuildErrors -TimeoutSec 30 -Source UIA
     Check '-Source UIA: COM reader not called, no fallbackReason' ($global:ReadCalls.Count -eq $before -and $r.success -and $null -eq $r.data.PSObject.Properties['fallbackReason'] -and $r.data.source -eq 'ErrorList(UIA)') (J $r.data)
     $global:UiaResult = [PSCustomObject]@{ Found = $false; Rows = @(); Truncated = $false; ToggleUsed = $false; Notes = @('no pane'); Headers = @(); Counts = $null }
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G3 COM rejected and UIA cannot find the window: ERRORLIST_UNAVAILABLE keeps data.fallbackReason (nothing reads as 0 errors)' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.data.fallbackReason -match '^scope-not-entire') (J $r)
     Set-Com @{ ok = $false; reason = 'com-error'; error = 'x' }
     $global:UiaResult = [PSCustomObject]@{
         Found = $true; Rows = @(); Truncated = $false; ToggleUsed = $true; Notes = @('mock'); Headers = @()
         Counts = [PSCustomObject]@{ errors = 2; warnings = 0; messages = 0 }
         Scope = [PSCustomObject]@{ before = 'Entire Solution'; after = 'Entire Solution'; entire = $true; switched = $false }; CountsTotalForm = $true }
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G4 COM failed, UIA reads 0 of 2 error rows -> ERRORLIST_INCOMPLETE (the old fail-closed path), fallbackReason on it' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and $r.data.fallbackReason -match '^com-read-failed') (J $r.error)
     # S1: the buttons could not be restored -> the UIA data says so
     Set-Com @{ ok = $false; reason = 'com-error'; error = 'busy'; flagsRestored = $false }
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G5 COM could not put the buttons back: data.comFlagsRestored = $false on the UIA result' ($r.data.comFlagsRestored -eq $false) (J $r.data)
     # S2: a leftover UIA scan is checked BEFORE COM (both toggle the same buttons)
     & $mod { $script:TcErrorListScanBusy = $true; $script:TcUiaCleanupMayBeRunning = $true }
     $global:StillRunning = 1
     $before = $global:ReadCalls.Count
     Set-Com @{ allCount = 0 }
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G6 a UIA scan may still be running: ERRORLIST_UNAVAILABLE, the COM reader was NOT called (S2)' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $global:ReadCalls.Count -eq $before -and $global:ClearCalls -ge 1) (J $r.error)
     $global:StillRunning = 0
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G7 dropped leftover scan (mayBeRunning): refused too, COM not called (S2)' (-not $r.success -and $r.data.scanMayBeRunning -eq $true -and $global:ReadCalls.Count -eq $before) (J $r.data)
     & $mod { $script:TcErrorListScanBusy = $false; $script:TcUiaCleanupMayBeRunning = $false }
 
@@ -480,18 +480,18 @@ try {
         Found = $true; Rows = @(); Truncated = $false; ToggleUsed = $true; Notes = @('mock'); Headers = @()
         Counts = [PSCustomObject]@{ errors = 6; warnings = 0; messages = 0 }
         Scope = [PSCustomObject]@{ before = 'Entire Solution'; after = 'Entire Solution'; entire = $true; switched = $false }; CountsTotalForm = $true }
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G8 item 8: standalone GetBuildErrors with a search text: NOT success with 0 errors; the UIA scan decides (0 of 6 -> ERRORLIST_INCOMPLETE), fallbackReason names the summary' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and $r.data.fallbackReason -match '^fewer-errors-than-last-build-summary' -and $r.data.source -eq 'ErrorList(UIA)') (J $r.error)
     $global:PaneRead = [PSCustomObject]@{ status = 'unreadable'; text = '' }
     $global:UiaResult = [PSCustomObject]@{ Found = $false; Rows = @(); Truncated = $false; ToggleUsed = $false; Notes = @(); Headers = @(); Counts = $null }
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G8 COM 0 rows, no pane, UIA cannot read: ERRORLIST_UNAVAILABLE with fallbackReason errors-zero-unverified (the answer is "not known", not "0 errors")' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.data.fallbackReason -match '^errors-zero-unverified') (J $r.error)
 
     # G9 / G10 item 2: partial rows are kept when the COM read stopped and UIA cannot do better
 
     Set-Com @{ ok = $false; reason = 'timeout'; errorsComplete = $false; warningsComplete = $false; messagesComplete = $false; errorCount = -1; warningCount = -1; messageCount = -1
         errors = @((Row 2 'e1'), (Row 2 'e2'), (Row 2 'e3')); warnings = @((Row 2 'w1'), (Row 2 'w2')) }
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G9 COM stopped after 3 error / 2 warning rows, UIA cannot find the window: success = $false, ERRORLIST_UNAVAILABLE, but data.errors holds the 3 rows with partial = true / truncated = true' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.data.partial -eq $true -and $r.data.truncated -eq $true -and @($r.data.errors).Count -eq 3 -and @($r.data.warnings).Count -eq 2 -and $r.data.source -eq 'ErrorList(COM)') (J $r.data)
     Check 'G9 partialRead says why and which severity is complete; the message says the rows are not the whole list' ($r.data.partialRead.reason -eq 'timeout' -and $r.data.partialRead.errorsComplete -eq $false -and $r.error.message -match 'partial = true' -and $r.error.message -match 'NOT the whole list') (J $r.data.partialRead)
     Check 'G9 the callers (Get-TcErrorListReadState) do not take rows of an UNAVAILABLE result' (-not ((& $mod { param($x) Get-TcErrorListReadState -Result $x } $r).usable)) ''
@@ -499,14 +499,76 @@ try {
         Found = $true; Rows = @(); Truncated = $false; ToggleUsed = $true; Notes = @('mock'); Headers = @()
         Counts = [PSCustomObject]@{ errors = 529; warnings = 0; messages = 0 }
         Scope = [PSCustomObject]@{ before = 'Entire Solution'; after = 'Entire Solution'; entire = $true; switched = $false }; CountsTotalForm = $true }
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G10 COM partial and UIA reads 0 of 529: ERRORLIST_INCOMPLETE keeps its own data; the COM rows are next to it in data.comPartial (3 error rows)' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and @($r.data.comPartial.errors).Count -eq 3 -and $r.data.comPartial.reason -eq 'timeout') (J $r.data)
 
     # G11 item 4: the UIA fallback never runs View.ErrorList (it restored a minimized VS2022 and took the foreground)
     $global:UiaResult = [PSCustomObject]@{ Found = $false; Rows = @(); Truncated = $false; ToggleUsed = $false; Notes = @(); Headers = @(); Counts = $null }
     Set-Com @{ caption = 'Error List - Open Documents'; allCount = 1; errors = @((Row 2 'e')) }
-    $r = Get-TcBuildErrors -TimeoutSec 30
+    $r = Get-TcBuildErrors -TimeoutSec 30 -Source Auto
     Check 'G11 item 4: Error List not on screen, UIA cannot find it: ERRORLIST_UNAVAILABLE that says TcAuto does not open it (View > Error List once); View.ErrorList was never executed in any Get-TcBuildErrors run of section G' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.error.message -match 'does not open it' -and $r.error.message -match 'View > Error List' -and $global:ViewErrorListCalls -eq 0) (J $r.error)
+
+
+    # G12-G16 PR #332 round 3: the UIA fallback took the foreground every time, so it is OFF by default (Source COM)
+    $global:UiaResult = [PSCustomObject]@{
+        Found = $true; Rows = @(); Truncated = $false; ToggleUsed = $true; Notes = @('mock'); Headers = @()
+        Counts = [PSCustomObject]@{ errors = 6; warnings = 0; messages = 0 }
+        Scope = [PSCustomObject]@{ before = 'Entire Solution'; after = 'Entire Solution'; entire = $true; switched = $false }; CountsTotalForm = $true }
+    $global:UiaCalls = 0
+    Set-Com @{ caption = 'Error List - Open Documents'; allCount = 1; errors = @((Row 2 'e')) }
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'G12 default (Source COM): COM rejected (scope) -> ERRORLIST_UNVERIFIED, no UIA scan, data.comReason / uiaFallback off, source COM' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNVERIFIED' -and $global:UiaCalls -eq 0 -and $r.data.comReason -match '^scope-not-entire' -and $r.data.uiaFallback -eq 'off' -and $r.data.source -eq 'ErrorList(COM)') (J $r)
+    Check 'G12 the hint names the scope and Source=Auto as the opt-in' ($r.error.hint -match 'Entire Solution' -and $r.error.hint -match 'Source=Auto') ([string]$r.error.hint)
+    $global:PaneRead = [PSCustomObject]@{ status = 'read'; text = "Build complete -- 6 errors, 25 warnings`n$msbuildOnly" }
+    Set-Com @{ allCount = 0 }
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'G13 default: search text (0 rows, last summary 6 errors) -> ERRORLIST_UNVERIFIED, never success + 0, no UIA scan' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNVERIFIED' -and $r.data.comReason -match '^fewer-errors-than-last-build-summary' -and $global:UiaCalls -eq 0 -and $r.error.hint -match 'BuildProject') (J $r.error)
+    $global:PaneRead = [PSCustomObject]@{ status = 'unreadable'; text = '' }
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'G13 default: 0 rows and nothing proves them -> ERRORLIST_UNVERIFIED errors-zero-unverified' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNVERIFIED' -and $r.data.comReason -match '^errors-zero-unverified' -and $global:UiaCalls -eq 0) (J $r.error)
+    Set-Com @{ ok = $false; reason = 'timeout'; errorsComplete = $false; warningsComplete = $false; messagesComplete = $false; errorCount = -1; warningCount = -1; messageCount = -1
+        errors = @((Row 2 'e1'), (Row 2 'e2')); warnings = @() }
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'G14 default: COM timeout -> ERRORLIST_UNAVAILABLE, the 2 rows read are kept (partial / truncated), hint says TimeoutSec, no UIA scan' (-not $r.success -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.data.partial -eq $true -and @($r.data.errors).Count -eq 2 -and $r.error.hint -match 'TimeoutSec' -and $global:UiaCalls -eq 0) (J $r)
+    Set-Com @{ allCount = 2; errors = @((Row 2 'e')); warnings = @((Row 2 'w')) }
+    $r = Get-TcBuildErrors -TimeoutSec 7
+    Check 'G15 default: the COM read gets the whole TimeoutSec (7 s -> MaxMs = CapMs = 7000; Source Auto would give 1750 / 4200)' ($r.success -and $global:ReadArgs.MaxMs -le 7000 -and $global:ReadArgs.MaxMs -gt 6000 -and $global:ReadArgs.CapMs -le 7000 -and $global:ReadArgs.CapMs -gt 6000) (J $global:ReadArgs)
+    $fc = { param($x) & $mod { param($y) Get-TcErrorListComFailureCode -Reason $y } $x }
+    $codesOk = ((& $fc 'com-read-failed:timeout') -eq 'ERRORLIST_UNAVAILABLE' -and (& $fc 'com-error: busy') -eq 'ERRORLIST_UNAVAILABLE' -and (& $fc 'errorlist-create-failed') -eq 'ERRORLIST_UNAVAILABLE' -and
+        (& $fc 'com-helper-unavailable: x') -eq 'ERRORLIST_UNAVAILABLE' -and (& $fc 'com-budget-exceeded: x') -eq 'ERRORLIST_UNAVAILABLE' -and
+        (& $fc 'scope-unknown: x') -eq 'ERRORLIST_UNVERIFIED' -and (& $fc 'errors-zero-unverified: x') -eq 'ERRORLIST_UNVERIFIED' -and (& $fc 'fewer-errors-than-build-pane: x') -eq 'ERRORLIST_UNVERIFIED' -and
+        (& $fc 'severity-isolation-mismatch: x') -eq 'ERRORLIST_UNVERIFIED' -and (& $fc 'build-summary-missing: x') -eq 'ERRORLIST_UNVERIFIED')
+    Check 'G16 reason -> code: not read = ERRORLIST_UNAVAILABLE, read but not proven = ERRORLIST_UNVERIFIED' $codesOk ''
+    $hints = @('scope-not-entire: x', 'errors-zero-unverified: x', 'build-pane-error-not-in-list: x', 'severity-isolation-mismatch: x', 'com-read-failed:timeout', 'com-helper-unavailable: x', 'errorlist-create-failed', 'com-read-failed:flags-not-effective', 'com-error: x') | ForEach-Object { & $mod { param($y) Get-TcErrorListComHint -Reason $y } $_ }
+    Check 'G16 every reason group has its own hint (9 different texts)' (@($hints | Select-Object -Unique).Count -eq 9) ''
+
+    # S1-S4 PR #332 round 3 (SA copy BuildProject): one build pane has two static analysis sections ('Additional code checks ...'
+    # 342 SA lines, 'Static analysis...' 190 SA lines, measured 2026-11-28); the Error List keeps the last section only
+    $saLine = { param($n, $code) "C:\p\DUT\ST_$n.TcDUT($n) : error: ${code}: Unused Variable 'v$n'" }
+    $paneLines = [System.Collections.Generic.List[string]]::new()
+    $paneLines.Add('------ Build started: Application: X.Y -------')
+    $paneLines.Add("C:\p\Main.TcPOU(12) : warning: C0139: The code 'a;' has no effect.")
+    $paneLines.Add('Build complete -- 0 errors, 1 warnings : Ready for download')
+    $paneLines.Add('Additional code checks ...')
+    foreach ($i in 1..5) { $paneLines.Add((& $saLine $i 'SA0033')) }
+    $paneLines.Add('Additional code checks complete -- 5 errors')
+    $paneLines.Add('Static analysis...')
+    foreach ($i in 3..5) { $paneLines.Add((& $saLine $i 'SA0033')) }
+    $paneLines.Add('Static analysis complete -- 3 errors, 0 warnings')
+    $paneLines.Add($msbuildOnly)
+    $saPane = $paneLines -join "`n"
+    $pl = & $mod { param($t) ConvertFrom-TcBuildPaneDiagnostics -Text $t } $saPane
+    $cur = & $mod { param($x) Select-TcCurrentPaneDiagnostics -PaneLines $x } $pl
+    Check 'S1 two SA sections: 8 SA error lines in the pane, 3 in the last section; the warning stays' (@($pl | Where-Object { $_.severity -eq 'Error' }).Count -eq 8 -and @($cur | Where-Object { $_.severity -eq 'Error' }).Count -eq 3 -and @($cur | Where-Object { $_.severity -eq 'Warning' }).Count -eq 1) (J @($cur))
+    $saRows = @(3..5 | ForEach-Object { [PSCustomObject]@{ severity = 'Error'; file = "ST_$_.TcDUT (Decl)"; description = "Unused Variable 'v$_'" } })
+    $sum = & $mod { param($t) ConvertFrom-TcBuildPaneSummary -Text $t } $saPane
+    $v = & $mod { param($a, $b, $c) Get-TcErrorListComVerdict -Com ([PSCustomObject]@{ ok = $true; caption = 'Error List'; allCount = 4; flagsRestored = $true }) -ErrorRows 3 -IsolatedTotal 4 -PaneLines $a -ErrorItems $b -RequireBuildSummary -PaneSummary $c } $pl $saRows $sum
+    Check 'S2 BuildProject case: 3 COM rows against the last section (not 8 pane lines) -> accepted, the note says 5 earlier lines were not compared' ($v.accept -and (@($v.notes) -join ' ') -match '5 static analysis error line') (J $v)
+    $v = & $mod { param($a, $b, $c) Get-TcErrorListComVerdict -Com ([PSCustomObject]@{ ok = $true; caption = 'Error List'; allCount = 3; flagsRestored = $true }) -ErrorRows 2 -IsolatedTotal 3 -PaneLines $a -ErrorItems $b -RequireBuildSummary -PaneSummary $c } $pl @($saRows[0], $saRows[1]) $sum
+    Check 'S3 one row of the last section missing (a filter) -> still fewer-errors-than-build-pane' (-not $v.accept -and $v.reason -match '^fewer-errors-than-build-pane: the build pane lists 3') (J $v)
+    $plain = & $mod { param($t) ConvertFrom-TcBuildPaneDiagnostics -Text $t } ((& $saLine 1 'SA0033') + "`nC:\p\Main.TcPOU(9) : error: C0046: Identifier 'x' not defined")
+    $cur2 = & $mod { param($x) Select-TcCurrentPaneDiagnostics -PaneLines $x } $plain
+    Check 'S4 no section header: every line is kept (old behaviour); compile errors are never dropped' (@($cur2).Count -eq 2) (J @($cur2))
 
     # --- H: summary pass-through ---
     & $mod {

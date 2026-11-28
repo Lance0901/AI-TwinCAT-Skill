@@ -69,6 +69,8 @@
     .PARAMETER RequireBuildSummary
         The caller decides success from the list (Build-TcProject): COM only with an end summary in -BuildPaneText (Get-TcBuildErrors).
     .PARAMETER Source
+        COM (default) = the COM read only, no UI Automation fallback (Get-TcBuildErrors -Source COM: a read it cannot prove is
+        ERRORLIST_UNVERIFIED / ERRORLIST_UNAVAILABLE, the screen is not touched). Auto = COM, then UIA.
         UIA = the UI Automation scan only. Callers that have no build pane of their own to prove the list is not filtered
         (Save-TcArchive, New-TcBootProject, Clear-TcProject) use it: the UIA readback compares the rows with the button totals.
     .PARAMETER FallbackErrorCount
@@ -86,7 +88,7 @@
         [Parameter()][switch]$ZeroErrorsKnown,
         [Parameter()][AllowNull()][string]$BuildPaneText = $null,
         [Parameter()][switch]$RequireBuildSummary,
-        [Parameter()][ValidateSet('Auto', 'UIA')][string]$Source = 'Auto'
+        [Parameter()][ValidateSet('COM', 'Auto', 'UIA')][string]$Source = 'COM'
     )
     $errorCount = $FallbackErrorCount
     $warningCount = $FallbackWarningCount
@@ -104,7 +106,7 @@
     if ($ZeroErrorsKnown) { $elArgs['ZeroErrorsKnown'] = $true }
     if (-not [string]::IsNullOrWhiteSpace($BuildPaneText)) { $elArgs['BuildPaneText'] = $BuildPaneText }
     if ($RequireBuildSummary) { $elArgs['RequireBuildSummary'] = $true }
-    if ($Source -ne 'Auto') { $elArgs['Source'] = $Source }
+    if ($Source -ne 'COM') { $elArgs['Source'] = $Source }
     $el = Get-TcBuildErrors @elArgs
     $rs = Get-TcErrorListReadState -Result $el
     $errorListNote = $null
@@ -193,6 +195,8 @@
     if ($null -ne $el.data) {
         if ($null -ne $el.data.PSObject.Properties['source']) { $elSource = [string]$el.data.source }
         if ($null -ne $el.data.PSObject.Properties['fallbackReason']) { $elFallback = [string]$el.data.fallbackReason }
+        # Source COM (default): a rejected COM read has no fallback, its reason is data.comReason (same meaning: why COM was not used)
+        elseif ($null -ne $el.data.PSObject.Properties['comReason']) { $elFallback = [string]$el.data.comReason }
     }
 
     [PSCustomObject]@{

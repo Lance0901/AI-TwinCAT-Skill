@@ -465,7 +465,13 @@
         }
     }
 
+    # PR #332 round 3 A-3: VS shows the Output window / Error List on a build (Tools > Options > Projects and Solutions), which
+    # restored a minimized VS2022 and gave it the foreground on the first BuildProject. Both options are off during the build and
+    # put back after the Error List read (TcBuildAutoShow.ps1; the finally block puts them back on every other way out).
+    $autoShow = $null
+    $autoShowRestore = $null
     try {
+        $autoShow = Disable-TcBuildAutoShow -Dte $script:TcDte
         # Entire build operation wrapped in retry for RPC_E_CALL_REJECTED (IDE busy)
         $solutionBuild = $null
         $buildWatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -616,6 +622,10 @@
         $elPaneText = if ([string]$buildPaneRead.status -eq 'read') { [string]$buildPaneRead.text } else { $null }
         $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings `
             -ExpectErrors:$elExpectErrors -BuildPaneText $elPaneText -RequireBuildSummary
+        # the build is over and its windows decision is made: the user's options back now (read back, data.buildAutoShow)
+        $autoShowRestore = Restore-TcBuildAutoShow -Dte $script:TcDte -State $autoShow
+        $autoShowChanged = @(if ($null -ne $autoShow) { @($autoShow.changed) })
+        $autoShow = $null
         $errorItems = $els.errorItems
         $warningItems = $els.warningItems
         $errorCount = $els.errorCount
@@ -794,6 +804,10 @@
         }
         if ($null -ne $decidedBy) {
             $data | Add-Member -NotePropertyName 'decidedBy' -NotePropertyValue $decidedBy
+        }
+        if ($autoShowChanged.Count -gt 0 -or ($null -ne $autoShowRestore -and -not $autoShowRestore.restored)) {
+            # which "show window on build" options were off for the build, and whether they read back as before
+            $data | Add-Member -NotePropertyName 'buildAutoShow' -NotePropertyValue ([PSCustomObject]@{ suppressed = @($autoShowChanged); restored = [bool]$autoShowRestore.restored; error = $autoShowRestore.error })
         }
         # #219: a build pane that was not read is stated, never an empty list that looks like "no output"
         if ($buildPaneTruncated) {
@@ -1081,5 +1095,12 @@
         $code = if ($null -ne $res.error) { [string]$res.error.code } else { 'BUILD_FAILED' }
         try { & $recordUnverified "$code, exception during the build" $res.data } catch { Write-Verbose "Build-TcProject: BUILD_REQUIRED not recorded ($($_.Exception.Message))" }
         $res
+    }
+    finally {
+        # every way out before the Error List read (timeout, modal dialog, exception): the user's options back
+        if ($null -ne $autoShow) {
+            try { $r = Restore-TcBuildAutoShow -Dte $script:TcDte -State $autoShow; if (-not $r.restored) { Write-Warning "Build-TcProject: Visual Studio options $(@($autoShow.changed) -join ', ') could not be set back ($($r.error))" } }
+            catch { Write-Warning "Build-TcProject: Visual Studio options $(@($autoShow.changed) -join ', ') could not be set back ($($_.Exception.Message))" }
+        }
     }
 }
