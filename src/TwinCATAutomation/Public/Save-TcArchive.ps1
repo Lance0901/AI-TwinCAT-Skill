@@ -1,4 +1,4 @@
-function Save-TcArchive {
+﻿function Save-TcArchive {
     <#
     .SYNOPSIS
         Saves the open solution (.tnzip) or the TwinCAT configuration (.tszip) as an archive of the state in XAE memory; checks the Error List, because a missing component is only reported there. Lists the archive entries.
@@ -122,7 +122,9 @@ function Save-TcArchive {
         else { $target = $sm }
 
         # baseline: error rows already in the Error List (left over from earlier operations)
-        $elBefore = Get-TcErrorListSummary
+        # UIA only (review #332 M1): the before / after comparison must see every new row; COM cannot see an Error List filter.
+        # Both reads use one source, so the row key keeps the code (review N4).
+        $elBefore = Get-TcErrorListSummary -Source UIA
         $baseline = $null
         if ($null -eq $elBefore.errorListError) {
             $baseline = @{}
@@ -169,7 +171,7 @@ function Save-TcArchive {
         $data.saved = $true
 
         # Error List after the call: a missing component is only reported there (measured)
-        $elAfter = Get-TcErrorListSummary
+        $elAfter = Get-TcErrorListSummary -Source UIA
         if ($null -ne $elAfter.errorListError) {
             $data | Add-Member -NotePropertyName errorListError -NotePropertyValue $elAfter.errorListError
             $warnings.Add("the Error List could not be read ($($elAfter.errorListError): $($elAfter.errorListMessage)); the archive file is kept, but whether every project is in it is not known")

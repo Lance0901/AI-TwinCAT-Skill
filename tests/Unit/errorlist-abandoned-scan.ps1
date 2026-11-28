@@ -114,7 +114,7 @@ $global:UiaScanCalls = 0
 Set-Abandoned @(New-StoppedEntry)
 foreach ($n in 1..2) {
     $threw = $null; $r = $null
-    try { $r = Get-TcBuildErrors -TimeoutSec 5 } catch { $threw = $_.Exception.Message }
+    try { $r = Get-TcBuildErrors -TimeoutSec 5 -Source UIA } catch { $threw = $_.Exception.Message }
     $s = Get-ScanState
     Check "Get-TcBuildErrors #$($n): no exception" ($null -eq $threw) "$threw"
     Check "Get-TcBuildErrors #$($n): success, 0 errors" ($null -ne $r -and $r.success -and $r.data.counts.errors -eq 0) $(if ($null -ne $r) { $r | ConvertTo-Json -Depth 4 -Compress } else { '' })
@@ -126,7 +126,7 @@ Check 'Get-TcBuildErrors: scan ran each time' ($global:UiaScanCalls -eq 2) "call
 $before = $global:UiaScanCalls
 $script:disposeCalls = 0
 Set-Abandoned @([PSCustomObject]@{ PowerShell = $psFake; Runspace = $rsFake; Started = 'disposefail' })
-$r = Get-TcBuildErrors -TimeoutSec 5
+$r = Get-TcBuildErrors -TimeoutSec 5 -Source UIA
 Check 'Get-TcBuildErrors: scan ran after a dispose failure' ($r.success -and $global:UiaScanCalls -eq $before + 1) "calls=$($global:UiaScanCalls) before=$before"
 Check 'Get-TcBuildErrors: data.scanCleanupWarning after a dropped entry' ($r.success -and [string]$r.data.scanCleanupWarning -match '#75') "$($r.data.scanCleanupWarning)"
 
@@ -135,18 +135,18 @@ Check 'Get-TcBuildErrors: data.scanCleanupWarning after a dropped entry' ($r.suc
 #    the next call scans
 $before = $global:UiaScanCalls
 Set-Abandoned @([PSCustomObject]@{ PowerShell = $null; Runspace = $null; Started = 'broken' })
-$r = Get-TcBuildErrors -TimeoutSec 5
+$r = Get-TcBuildErrors -TimeoutSec 5 -Source UIA
 Check 'may-be-running: ERRORLIST_UNAVAILABLE, not success' ((-not $r.success) -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE') "$($r.error.code)"
 Check 'may-be-running: no scan started' ($global:UiaScanCalls -eq $before) "calls=$($global:UiaScanCalls) before=$before"
 Check 'may-be-running: data.scanBusy false, scanMayBeRunning true, warning present' ($r.data.scanBusy -eq $false -and $r.data.scanMayBeRunning -eq $true -and [string]$r.data.scanCleanupWarning -match '#75') ($r.data | ConvertTo-Json -Compress)
-$r = Get-TcBuildErrors -TimeoutSec 5
+$r = Get-TcBuildErrors -TimeoutSec 5 -Source UIA
 Check 'may-be-running: next call scans normally' ($r.success -and $global:UiaScanCalls -eq $before + 1 -and $null -eq $r.data.PSObject.Properties['scanCleanupWarning']) "calls=$($global:UiaScanCalls) before=$before"
 # same for a list that cannot be walked
 $before = $global:UiaScanCalls
 Set-Abandoned @() -NullList
-$r = Get-TcBuildErrors -TimeoutSec 5
+$r = Get-TcBuildErrors -TimeoutSec 5 -Source UIA
 Check 'may-be-running (list reset): no scan, ERRORLIST_UNAVAILABLE' ((-not $r.success) -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $global:UiaScanCalls -eq $before) "calls=$($global:UiaScanCalls) before=$before"
-$r = Get-TcBuildErrors -TimeoutSec 5
+$r = Get-TcBuildErrors -TimeoutSec 5 -Source UIA
 Check 'may-be-running (list reset): next call scans' ($r.success -and $global:UiaScanCalls -eq $before + 1) "calls=$($global:UiaScanCalls) before=$before"
 
 # 7. an entry that is really still running (Start-Sleep 30): stays tracked, no scan, scanBusy true
@@ -174,7 +174,7 @@ try {
     Check 'running entry: Clear returns 1' ($left -eq 1) "got $left"
     Check 'running entry: busy stays true, still tracked' ($s.busy -eq $true -and $s.count -eq 1) "busy=$($s.busy) count=$($s.count)"
     Check 'running entry: runspace still Opened' ($liveRs.RunspaceStateInfo.State -eq 'Opened') "$($liveRs.RunspaceStateInfo.State)"
-    $r = Get-TcBuildErrors -TimeoutSec 5
+    $r = Get-TcBuildErrors -TimeoutSec 5 -Source UIA
     Check 'running entry: ERRORLIST_UNAVAILABLE with data.scanBusy' ((-not $r.success) -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.data.scanBusy -eq $true) ($r | ConvertTo-Json -Depth 4 -Compress)
     Check 'running entry: no scan started' ($global:UiaScanCalls -eq $before) "calls=$($global:UiaScanCalls) before=$before"
     $live.Stop()

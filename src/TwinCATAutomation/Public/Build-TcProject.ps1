@@ -172,6 +172,8 @@
                              totals, Errors total unreadable, or a filtered scope with rows missing, #117);
                              codeVerified = $null then, but errorItems / codeErrors still list the rows read (#138)
         data.errorListScope  the Error List scope filter @{ before; after; entire; switched } (#117)
+        data.errorListSource 'ErrorList(COM)' (DTE2 ErrorList.ErrorItems, item 88) or 'ErrorList(UIA)'; with UIA after a COM attempt
+        data.errorListFallbackReason  why COM was not used (Get-TcBuildErrors data.fallbackReason), only then
         data.missingRows     with an incomplete read: [ @{ severity; expected; read } ]
         data.errorListNote   warnings (only) read short, or a filtered scope whose counts all match: the error
                              rows are complete; warnings short also adds WARNINGS_INCOMPLETE to warningCodes
@@ -463,7 +465,13 @@
         }
     }
 
+    # PR #332 round 3 A-3: VS shows the Output window / Error List on a build (Tools > Options > Projects and Solutions), which
+    # restored a minimized VS2022 and gave it the foreground on the first BuildProject. Both options are off during the build and
+    # put back after the Error List read (TcBuildAutoShow.ps1; the finally block puts them back on every other way out).
+    $autoShow = $null
+    $autoShowRestore = $null
     try {
+        $autoShow = Disable-TcBuildAutoShow -Dte $script:TcDte
         # Entire build operation wrapped in retry for RPC_E_CALL_REJECTED (IDE busy)
         $solutionBuild = $null
         $buildWatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -593,7 +601,8 @@
         # @() around the if: an if-expression unrolls its output (0 items -> AutomationNull -> JSON {}, 1 item -> a string)
         $warningLines = @(if ($warningLinesTruncated) { $allWarningLines | Select-Object -First $warnMaxLines } else { $allWarningLines })
 
-        # Error List (UI Automation): the PLC compiler does not report through DTE.
+        # Error List: COM (DTE2 ErrorList.ErrorItems, early-bound C# helper) first, UI Automation as the fallback
+        # (Get-TcBuildErrors; PowerShell late binding reads a fake 0 there, 實測 2026-11-23).
         # Every build gets the full Error List budget ($script:TcBuildErrorListTimeoutSec, 30 s):
         # the success path used to get 8 s, but the scan (show the pane, switch the scope, toggle
         # the severities, read the grid) took 16.5-17.8 s on a 4026 VS2022 XAE after a build that
@@ -604,7 +613,19 @@
         # libraries, not PLC code errors, so data.errors counts the code errors only.
         $fallbackErrors = if ($null -ne $failedProjects) { [int]$failedProjects } else { 0 }
         $fallbackWarnings = $allWarningLines.Count
-        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings
+        # item 88: the Error List is read through COM first (Get-TcBuildErrors); the build failed (LastBuildInfo > 0) ->
+        # a COM list without an error row is not accepted, and the pane of THIS build is the cross-check / code source.
+        # -RequireBuildSummary (review #332 M1): the result decides success, and COM cannot see the Error List search box or
+        # column filters, so COM is accepted only when the pane of this build has an end summary line; otherwise UIA reads
+        # (button totals vs rows), and when that fails too buildSucceeded stays $null -> BUILD_STATUS_UNKNOWN.
+        $elExpectErrors = ($null -ne $failedProjects -and [int]$failedProjects -gt 0)
+        $elPaneText = if ([string]$buildPaneRead.status -eq 'read') { [string]$buildPaneRead.text } else { $null }
+        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings `
+            -ExpectErrors:$elExpectErrors -BuildPaneText $elPaneText -RequireBuildSummary
+        # the build is over and its windows decision is made: the user's options back now (read back, data.buildAutoShow)
+        $autoShowRestore = Restore-TcBuildAutoShow -Dte $script:TcDte -State $autoShow
+        $autoShowChanged = @(if ($null -ne $autoShow) { @($autoShow.changed) })
+        $autoShow = $null
         $errorItems = $els.errorItems
         $warningItems = $els.warningItems
         $errorCount = $els.errorCount
@@ -784,6 +805,10 @@
         if ($null -ne $decidedBy) {
             $data | Add-Member -NotePropertyName 'decidedBy' -NotePropertyValue $decidedBy
         }
+        if ($autoShowChanged.Count -gt 0 -or ($null -ne $autoShowRestore -and -not $autoShowRestore.restored)) {
+            # which "show window on build" options were off for the build, and whether they read back as before
+            $data | Add-Member -NotePropertyName 'buildAutoShow' -NotePropertyValue ([PSCustomObject]@{ suppressed = @($autoShowChanged); restored = [bool]$autoShowRestore.restored; error = $autoShowRestore.error })
+        }
         # #219: a build pane that was not read is stated, never an empty list that looks like "no output"
         if ($buildPaneTruncated) {
             $data | Add-Member -NotePropertyName 'buildPaneTruncated' -NotePropertyValue $true
@@ -802,6 +827,9 @@
         }
         # #117 / #138: what the Error List read covered (scope filter, rows short of the button totals)
         if ($null -ne $els.scope) { $data | Add-Member -NotePropertyName 'errorListScope' -NotePropertyValue $els.scope }
+        # item 88: which source the Error List came from, and why COM was not used when UIA read it
+        if ($null -ne $els.errorListSource) { $data | Add-Member -NotePropertyName 'errorListSource' -NotePropertyValue $els.errorListSource }
+        if ($null -ne $els.errorListFallbackReason) { $data | Add-Member -NotePropertyName 'errorListFallbackReason' -NotePropertyValue $els.errorListFallbackReason }
         if ($els.incomplete) { $data | Add-Member -NotePropertyName 'missingRows' -NotePropertyValue @($els.missingRows) }
         if ($null -ne $els.errorListNote) { $data | Add-Member -NotePropertyName 'errorListNote' -NotePropertyValue $els.errorListNote }
         # Leftover timed-out Error List scans that were dropped (#75); on a failed read it also
@@ -1067,5 +1095,12 @@
         $code = if ($null -ne $res.error) { [string]$res.error.code } else { 'BUILD_FAILED' }
         try { & $recordUnverified "$code, exception during the build" $res.data } catch { Write-Verbose "Build-TcProject: BUILD_REQUIRED not recorded ($($_.Exception.Message))" }
         $res
+    }
+    finally {
+        # every way out before the Error List read (timeout, modal dialog, exception): the user's options back
+        if ($null -ne $autoShow) {
+            try { $r = Restore-TcBuildAutoShow -Dte $script:TcDte -State $autoShow; if (-not $r.restored) { Write-Warning "Build-TcProject: Visual Studio options $(@($autoShow.changed) -join ', ') could not be set back ($($r.error))" } }
+            catch { Write-Warning "Build-TcProject: Visual Studio options $(@($autoShow.changed) -join ', ') could not be set back ($($_.Exception.Message))" }
+        }
     }
 }

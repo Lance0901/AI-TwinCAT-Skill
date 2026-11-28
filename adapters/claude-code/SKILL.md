@@ -315,7 +315,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `Clear-TcLifecycleBlock` | `ClearLifecycleBlock` | `[-AmsNetId <string>] [-Reason <string>] [-FallbackMethod <string>] [-AllowedSideEffects <string[]>] [-MaxVerifyLevel <string>]` |
 | `Clear-TcProject` | `CleanProject` | `[-TimeoutSec <int>] [-AllowUnresolvedLibrary]` |
 | `Connect-TcAds` | `ConnectAds` | `[-AmsNetId <string>] [-Port <int>]` |
-| `Connect-TcIde` | `ConnectIde` | `[-ProgId <string>] [-SolutionPath <string>] [-NoLaunch] [-LaunchIfBlocked] [-TakeOverOrphan] [-ProcessId <int>]` |
+| `Connect-TcIde` | `ConnectIde` | `[-ProgId <string>] [-SolutionPath <string>] [-NoLaunch] [-LaunchIfBlocked] [-TakeOverOrphan] [-ProcessId <int>] [-Hidden]` |
 | `Connect-TcNcAxisToPlc` | `LinkNcAxis` | `-Axis <string> -PlcVariable <string> [-PlcProjectPath <string>] [-DryRun <bool>]` |
 | `Disconnect-TcAds` | `DisconnectAds` | - |
 | `Disconnect-TcIde` | `DisconnectIde` | `[-Quit] [-Kill] [-ForgetPendingLaunch]` |
@@ -327,7 +327,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `Find-TcAdsTarget` | `FindAdsTargets` | `[-Search <string>]` |
 | `Get-TcAdsRoutes` | `GetAdsRoutes` | - |
 | `Get-TcAutomationVersion` | `GetAutomationVersion` | `[-Verify]` |
-| `Get-TcBuildErrors` | `GetBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec <int>]` |
+| `Get-TcBuildErrors` | `GetBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec <int>] [-Source <string>] [-ExpectErrors] [-ZeroErrorsKnown] [-BuildPaneText <string>] [-RequireBuildSummary]` |
 | `Get-TcComModuleParameter` | `GetTcComParameter` | `-Module <string> [-Name <string>] [-ParameterId <string>] [-Online]` |
 | `Get-TcIdeInfo` | `GetIdeInfo` | - |
 | `Get-TcIdeModalDialog` | `GetIdeModalDialog` (composite) | `[-ProcessId <int>] [-TimeoutSec <int>]` |

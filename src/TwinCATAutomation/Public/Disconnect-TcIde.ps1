@@ -3,7 +3,9 @@ function Disconnect-TcIde {
     .SYNOPSIS
         Disconnects from the TwinCAT IDE and releases COM references.
     .DESCRIPTION
-        Without -Quit only the COM references are released; the IDE keeps running.
+        Without -Quit only the COM references are released; the IDE keeps running. An IDE launched with Connect-TcIde -Hidden is
+        handed to the user first (DTE.UserControl = true: it becomes visible; otherwise it would close with the reference),
+        data.hiddenIdeHandedToUser.
 
         With -Quit:
           0. #227: only for an IDE this session launched (data.ownedBySession). Any other IDE
@@ -294,6 +296,14 @@ function Disconnect-TcIde {
         $script:TcSysManager = $null
     }
 
+    # Connect-TcIde -Hidden: an IDE that is not under user control closes when its last automation client lets go. Without -Quit the
+    # IDE is meant to stay: hand it to the user first (UserControl = true, it becomes visible; it cannot be hidden again).
+    $handedToUser = $null
+    if (-not $Quit -and [bool]$script:TcIdeLaunchedHidden -and $null -ne $script:TcDte) {
+        try { $script:TcDte.UserControl = $true; $handedToUser = $true }
+        catch { $handedToUser = $false; Write-Warning "Disconnect-TcIde: the hidden IDE could not be handed to the user (UserControl), it may close when the COM reference is released: $($_.Exception.Message)" }
+    }
+    $script:TcIdeLaunchedHidden = $false
     if ($null -ne $script:TcDte) {
         try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcDte) | Out-Null } catch { }
         $script:TcDte = $null
@@ -321,6 +331,7 @@ function Disconnect-TcIde {
         Clear-IdeIdentity
         $plain = [PSCustomObject]@{ message = $(if ($null -ne $silentRestoreError) { "Disconnected from TwinCAT IDE; $silentRestoreError." } else { 'Disconnected from TwinCAT IDE.' }) }
         Add-SilentRestoreData $plain
+        if ($null -ne $handedToUser) { $plain | Add-Member -NotePropertyName 'hiddenIdeHandedToUser' -NotePropertyValue $handedToUser }
         return New-TcResult -Success $true -Data $plain
     }
 

@@ -1,4 +1,4 @@
-function New-TcBootProject {
+﻿function New-TcBootProject {
     <#
     .SYNOPSIS
         Generates the local boot project of a PLC (GenerateBootProject($false) on 'TIPC^<Plc>'): writes _Boot\<platform>\Plc\Port_<port>.* of the project, not the target. SAVES the project files. Reads the boot files back.
@@ -136,7 +136,8 @@ function New-TcBootProject {
             $data | Add-Member -NotePropertyName xaeMessage -NotePropertyValue $info.message
             $data | Add-Member -NotePropertyName hresult -NotePropertyValue $info.hresultHex
             # E_FAIL with a meaningless message on a compile error (measured): the Error List tells why
-            $els = Get-TcErrorListSummary
+            # UIA only (review #332 M1): no build pane summary here to prove the list is not filtered
+            $els = Get-TcErrorListSummary -Source UIA
             $isStale = { param($i) $i.category -eq 'other' -and [string]::IsNullOrWhiteSpace([string]$i.code) }
             $located = @($els.errorItems | Where-Object { -not (& $isStale $_) })
             $data | Add-Member -NotePropertyName errorItems -NotePropertyValue $located

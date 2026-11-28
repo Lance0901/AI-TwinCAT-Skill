@@ -80,6 +80,12 @@ function Connect-TcIde {
         connecting and ITcSysManager is obtained in one step (up to 10 x 1 s).
         Before touching the solution the IDE process is checked for a modal dialog
         (Find-TcIdeModalDialog); if one is open IDE_MODAL_DIALOG is returned.
+    .PARAMETER Hidden
+        Only for an IDE this call launches: keep it hidden (DTE.UserControl stays false: no main window, no foreground change; the
+        Error List is read through COM as usual). data.hidden = $true. The IDE then lives only as long as this process holds it:
+        it closes when the process ends without Disconnect-TcIde (ReloadRuntime, bridge restart, MCP client closed; unsaved
+        changes are lost, no orphan takeover). Disconnect-TcIde without -Quit hands it to the user (UserControl = true, it becomes
+        visible) instead of letting it close. Ignored when an existing IDE is attached.
     .PARAMETER ProgId
         COM ProgID to connect to / launch. When given, only running instances with this ProgID
         are candidates (#280: none -> this ProgID is launched, -NoLaunch: IDE_NOT_FOUND with
@@ -214,11 +220,15 @@ function Connect-TcIde {
         [switch]$TakeOverOrphan,
 
         [Parameter()]
-        [int]$ProcessId
+        [int]$ProcessId,
+
+        [Parameter()]
+        [switch]$Hidden
     )
 
     $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
     $launchSec = $null
+    $launchedHidden = $false
 
     # Forget the pid / HWND of a previous connection: Invoke-TcComRetry checks that pid after an
     # RPC failure, and a stale pid (IDE that has since exited) would turn a busy call against the
@@ -237,6 +247,7 @@ function Connect-TcIde {
     $previousSolution = [string]$script:TcSolutionPath
     $previousIdeStart = $script:TcIdeStartTime   # module-state needs pid AND start time (no recycled pid)
     $script:TcIdeSelectedBy = $null
+    $script:TcIdeLaunchedHidden = $false
     $script:TcIdeProcessId = $null
     $script:TcIdeStartTime = $null
     $script:TcIdeMainHwnd = 0
@@ -1034,7 +1045,15 @@ function Connect-TcIde {
         }
 
         $launchSec = [math]::Round($swLaunch.Elapsed.TotalSeconds, 1)
-        try { $dte.UserControl = $true } catch { Write-Verbose "DTE.UserControl could not be set ($($_.Exception.Message))" }
+        # -Hidden: UserControl stays false, so the main window is never shown and never takes the foreground (an IDE started through
+        # COM has no visible main window; UserControl = true makes it visible and it cannot be hidden again:
+        # https://learn.microsoft.com/en-us/dotnet/api/envdte._dte.usercontrol). The cost: an IDE that is not under user control
+        # shuts down when its last automation client lets go (same page), i.e. when this process ends (ReloadRuntime, a bridge
+        # restart, the MCP client closing) - unsaved changes are lost and it cannot be taken over as an orphan later.
+        if ($Hidden) { $launchedHidden = $true }
+        else {
+            try { $dte.UserControl = $true } catch { Write-Verbose "DTE.UserControl could not be set ($($_.Exception.Message))" }
+        }
         try { $dte.SuppressUI = $false } catch { }
         $usedProgId = $launchProgId
         $selectionReason = 'launched'
@@ -1451,7 +1470,9 @@ function Connect-TcIde {
             $data | Add-Member -NotePropertyName 'nextStep' -NotePropertyValue 'A reload prompt of the taken-over IDE was answered without reloading (data.resetRequired, now or by an earlier takeover attempt; data.reloadPromptAttempts lists the attempts of this call only): the IDE keeps its in-memory solution while files on disk changed. Build-TcProject, Enable-TcConfig, PLC login, boot project, library save and every project-file save refuse with RESET_REQUIRED until Reset-TcSolution (MCP: ResetSolution, without -SaveProjectChanges) reopened the solution from disk; or quit the IDE with Disconnect-TcIde -Quit (-Kill) if it is no longer needed. Reset-TcSolution closes every document without saving: while anything is unsaved (data.dirtyDocuments not empty, data.dirtyDocumentsError set, or an unsaved project / solution) it refuses with UNSAVED_CHANGES and closes nothing; ask the user, and only with their consent call it again with -Force (-DiscardProjectChanges is not that consent). If it then returns PROJECT_UNSAVED_CHANGES (PLC objects in XAE missing from the .plcproj on disk), follow its hint: -DiscardProjectChanges keeps the disk version, -SaveProjectChanges the XAE version.'
         }
     }
+    $script:TcIdeLaunchedHidden = $launchedHidden
     if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {
+        $data | Add-Member -NotePropertyName 'hidden' -NotePropertyValue $launchedHidden
         $data | Add-Member -NotePropertyName 'launchSec' -NotePropertyValue $launchSec
     }
     # #72: what the launched ProgID was derived from (.tsproj TcVersion per project, .sln VisualStudioVersion)
